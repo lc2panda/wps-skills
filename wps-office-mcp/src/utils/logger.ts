@@ -31,6 +31,8 @@ const wangFormat = winston.format.printf(({ level, message, timestamp, ...meta }
  * 创建Logger实例
  */
 const createLogger = (name: string): winston.Logger => {
+  const homeDir = process.env.HOME || process.env.USERPROFILE || require('os').homedir();
+  const logDir = path.join(homeDir, '.wps-office-mcp', 'logs');
   return winston.createLogger({
     level: process.env.LOG_LEVEL || 'info',
     format: winston.format.combine(
@@ -50,12 +52,12 @@ const createLogger = (name: string): winston.Logger => {
       }),
       // 文件输出 - 错误单独记录，出问题好找
       new winston.transports.File({
-        filename: path.join(process.cwd(), 'logs', 'error.log'),
+        filename: path.join(logDir, 'error.log'),
         level: 'error',
       }),
       // 所有日志
       new winston.transports.File({
-        filename: path.join(process.cwd(), 'logs', 'combined.log'),
+        filename: path.join(logDir, 'combined.log'),
       }),
     ],
   });
