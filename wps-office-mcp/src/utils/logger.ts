@@ -28,11 +28,45 @@ const wangFormat = winston.format.printf(({ level, message, timestamp, ...meta }
 });
 
 /**
+ * 解析布尔环境变量
+ */
+const isEnvTrue = (value?: string): boolean => {
+  if (!value) return false;
+  return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
+};
+
+/**
  * 创建Logger实例
  */
 const createLogger = (name: string): winston.Logger => {
   const homeDir = process.env.HOME || process.env.USERPROFILE || require('os').homedir();
   const logDir = path.join(homeDir, '.wps-office-mcp', 'logs');
+  // MCP 默认走 stdio 协议，stdout 必须保持纯净；仅在显式开启时才输出 Console 日志
+  const enableConsoleLog = isEnvTrue(process.env.MCP_CONSOLE_LOG);
+  const transports: winston.transport[] = [
+    // 文件输出 - 错误单独记录，出问题好找
+    new winston.transports.File({
+      filename: path.join(logDir, 'error.log'),
+      level: 'error',
+    }),
+    // 所有日志
+    new winston.transports.File({
+      filename: path.join(logDir, 'combined.log'),
+    }),
+  ];
+
+  if (enableConsoleLog) {
+    transports.unshift(
+      new winston.transports.Console({
+        format: winston.format.combine(
+          winston.format.colorize({ all: true }),
+          winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+          wangFormat
+        ),
+      })
+    );
+  }
+
   return winston.createLogger({
     level: process.env.LOG_LEVEL || 'info',
     format: winston.format.combine(
@@ -41,25 +75,7 @@ const createLogger = (name: string): winston.Logger => {
       wangFormat
     ),
     defaultMeta: { service: name },
-    transports: [
-      // 控制台输出 - 带颜色，看着舒服
-      new winston.transports.Console({
-        format: winston.format.combine(
-          winston.format.colorize({ all: true }),
-          winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-          wangFormat
-        ),
-      }),
-      // 文件输出 - 错误单独记录，出问题好找
-      new winston.transports.File({
-        filename: path.join(logDir, 'error.log'),
-        level: 'error',
-      }),
-      // 所有日志
-      new winston.transports.File({
-        filename: path.join(logDir, 'combined.log'),
-      }),
-    ],
+    transports,
   });
 };
 
