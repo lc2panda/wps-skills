@@ -1,4 +1,4 @@
-# Input: Action 名称与 JSON 参数
+﻿# Input: Action 名称与 JSON 参数
 # Output: WPS COM 调用结果 JSON
 # Pos: Windows COM 桥接脚本。一旦我被修改，请更新我的头部注释（Updated: 2026-02-05 13:09:38 CST），以及所属文件夹的md。
 # WPS COM Bridge - PowerShell script for WPS COM operations
@@ -1242,7 +1242,7 @@ switch ($Action) {
         $sheet = $excel.ActiveSheet
         $col = $p.column
         if ($col -is [int]) { $col = Convert-ColumnNumberToLetter([int]$col) }
-        $sheet.Range("$col:$col").ColumnWidth = $p.width
+        $sheet.Range("${col}:${col}").ColumnWidth = $p.width
         Output-Json @{ success = $true; data = @{ column = $col; width = $p.width } }
     }
 
@@ -1263,7 +1263,7 @@ switch ($Action) {
         } elseif ($p.column) {
             $col = $p.column
             if ($col -is [int]) { $col = Convert-ColumnNumberToLetter([int]$col) }
-            $sheet.Range("$col:$col").AutoFit()
+            $sheet.Range("${col}:${col}").AutoFit()
         } else {
             $sheet.UsedRange.Columns.AutoFit()
         }
@@ -1351,7 +1351,7 @@ switch ($Action) {
         if ($null -eq $startRow) { Output-Json @{ success = $false; error = "row/startRow required" }; exit }
         $count = if ($p.count) { [int]$p.count } else { 1 }
         $endRow = $startRow + $count - 1
-        $sheet.Range("$startRow:$endRow").Insert()
+        $sheet.Range("$($startRow):$($endRow)").Insert()
         Output-Json @{ success = $true; data = @{ insertedAt = $startRow; count = $count } }
     }
 
@@ -1364,7 +1364,7 @@ switch ($Action) {
         if ($col -is [int]) { $col = Convert-ColumnNumberToLetter([int]$col) }
         $count = if ($p.count) { [int]$p.count } else { 1 }
         for ($i = 0; $i -lt $count; $i++) {
-            $sheet.Range("$col:$col").Insert()
+            $sheet.Range("${col}:${col}").Insert()
         }
         Output-Json @{ success = $true; data = @{ insertedAt = $col; count = $count } }
     }
@@ -1377,7 +1377,7 @@ switch ($Action) {
         if ($null -eq $startRow) { Output-Json @{ success = $false; error = "row/startRow required" }; exit }
         $count = if ($p.count) { [int]$p.count } else { 1 }
         $endRow = $startRow + $count - 1
-        $sheet.Range("$startRow:$endRow").Delete()
+        $sheet.Range("$($startRow):$($endRow)").Delete()
         Output-Json @{ success = $true; data = @{ deletedFrom = $startRow; count = $count } }
     }
 
@@ -1390,7 +1390,7 @@ switch ($Action) {
         if ($col -is [int]) { $col = Convert-ColumnNumberToLetter([int]$col) }
         $count = if ($p.count) { [int]$p.count } else { 1 }
         for ($i = 0; $i -lt $count; $i++) {
-            $sheet.Range("$col:$col").Delete()
+            $sheet.Range("${col}:${col}").Delete()
         }
         Output-Json @{ success = $true; data = @{ deletedFrom = $col; count = $count } }
     }
@@ -1401,7 +1401,7 @@ switch ($Action) {
         $sheet = $excel.ActiveSheet
         $rows = if ($p.rows) { $p.rows } elseif ($p.row) { @($p.row) } else { @() }
         if ($rows.Count -eq 0) { Output-Json @{ success = $false; error = "row/rows required" }; exit }
-        foreach ($r in $rows) { $sheet.Range("$r:$r").Hidden = $true }
+        foreach ($r in $rows) { $sheet.Range("$($r):$($r)").Hidden = $true }
         Output-Json @{ success = $true; data = @{ hiddenRows = $rows } }
     }
 
@@ -1415,7 +1415,7 @@ switch ($Action) {
         foreach ($c in $cols) {
             $col = $c
             if ($col -is [int]) { $col = Convert-ColumnNumberToLetter([int]$col) }
-            $sheet.Range("$col:$col").Hidden = $true
+            $sheet.Range("${col}:${col}").Hidden = $true
             $hidden += $col
         }
         Output-Json @{ success = $true; data = @{ hiddenColumns = $hidden } }
@@ -1427,7 +1427,7 @@ switch ($Action) {
         $sheet = $excel.ActiveSheet
         $rows = if ($p.rows) { $p.rows } elseif ($p.row) { @($p.row) } else { @() }
         if ($rows.Count -eq 0) { Output-Json @{ success = $false; error = "row/rows required" }; exit }
-        foreach ($r in $rows) { $sheet.Range("$r:$r").Hidden = $false }
+        foreach ($r in $rows) { $sheet.Range("$($r):$($r)").Hidden = $false }
         Output-Json @{ success = $true; data = @{ shownRows = $rows } }
     }
 
@@ -1441,7 +1441,7 @@ switch ($Action) {
         foreach ($c in $cols) {
             $col = $c
             if ($col -is [int]) { $col = Convert-ColumnNumberToLetter([int]$col) }
-            $sheet.Range("$col:$col").Hidden = $false
+            $sheet.Range("${col}:${col}").Hidden = $false
             $shown += $col
         }
         Output-Json @{ success = $true; data = @{ shownColumns = $shown } }
@@ -1465,8 +1465,8 @@ switch ($Action) {
         $endCol = $p.endColumn
         if ($startCol -is [int]) { $startCol = Convert-ColumnNumberToLetter([int]$startCol) }
         if ($endCol -is [int]) { $endCol = Convert-ColumnNumberToLetter([int]$endCol) }
-        $sheet.Range("$startCol:$endCol").Group()
-        Output-Json @{ success = $true; data = @{ grouped = "$startCol:$endCol" } }
+        $sheet.Range("${startCol}:${endCol}").Group()
+        Output-Json @{ success = $true; data = @{ grouped = "${startCol}:${endCol}" } }
     }
 
     "freezePanes" {
@@ -4393,3 +4393,4 @@ switch ($Action) {
         Output-Json @{ success = $false; error = "Unknown action: $Action" }
     }
 }
+
