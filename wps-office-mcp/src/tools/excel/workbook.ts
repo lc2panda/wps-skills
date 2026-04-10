@@ -47,9 +47,10 @@ export const openWorkbookHandler: ToolHandler = async (
     };
   }
   try {
+    const params = { filePath, path: filePath };
     const response = await wpsClient.executeMethod<{ message: string }>(
       'openWorkbook',
-      { filePath },
+      params,
       WpsAppType.SPREADSHEET
     );
     if (!response.success) {

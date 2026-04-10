@@ -135,7 +135,11 @@ export const saveAsHandler: ToolHandler = async (
   }
 
   try {
-    const params: Record<string, unknown> = { filePath };
+    const params: Record<string, unknown> = {
+      filePath,
+      path: filePath,
+      outputPath: filePath,
+    };
     if (format) {
       params.format = format.toLowerCase().replace(/^\./, '');
     }

@@ -220,13 +220,18 @@ export const openDocumentHandler: ToolHandler = async (
   }
 
   try {
+    const params = {
+      filePath,
+      path: filePath,
+    };
+
     const response = await wpsClient.executeMethod<{
       success: boolean;
       message: string;
       documentName: string;
     }>(
       'openDocument',
-      { filePath },
+      params,
       WpsAppType.WRITER
     );
 
