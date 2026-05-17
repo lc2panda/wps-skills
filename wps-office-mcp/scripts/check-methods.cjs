@@ -1,0 +1,10 @@
+const fs = require('fs');
+const ps = fs.readFileSync(__dirname + '/wps-com.ps1', 'utf8');
+const re = /"([a-zA-Z][a-zA-Z0-9]*)"\s*\{/g;
+const all = new Set();
+let m;
+while ((m = re.exec(ps)) !== null) all.add(m[1]);
+const { TOOLS_INDEX } = require('../dist/tools/gateway');
+const idx = new Set(TOOLS_INDEX.map(t => t.name));
+const missing = [...all].filter(n => !idx.has(n));
+console.log('PS1 all:', all.size, '| Index unique:', idx.size, '| Missing:', missing.length, missing.join(', '));

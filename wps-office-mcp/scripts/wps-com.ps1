@@ -1106,6 +1106,47 @@ switch ($Action) {
         Output-Json @{ success = $true; data = @{ chartName = $chartObj.Name; updatedProperties = $updated } }
     }
 
+    "exportChartAsImage" {
+        $excel = Get-WpsExcel
+        if ($null -eq $excel) { Output-Json @{ success = $false; error = "WPS Excel not running" }; exit }
+        $sheet = if ($p.sheet) { $excel.ActiveWorkbook.Sheets.Item($p.sheet) } else { $excel.ActiveSheet }
+        $outputPath = if ($p.outputPath) { $p.outputPath } else { $p.path }
+        if ([string]::IsNullOrEmpty($outputPath)) { Output-Json @{ success = $false; error = "Missing outputPath" }; exit }
+        $chartName = $p.chartName
+        if ([string]::IsNullOrEmpty($chartName)) { Output-Json @{ success = $false; error = "Missing chartName" }; exit }
+        $rawFormat = if ($p.format) { $p.format.ToString().ToUpper() } else { "PNG" }
+        $filterName = if ($rawFormat -eq "JPEG") { "JPG" } else { $rawFormat }
+        $chartObj = $sheet.ChartObjects($chartName)
+        $chartObj.Chart.Export($outputPath, $filterName)
+        Output-Json @{ success = $true; data = @{ chartName = $chartName; outputPath = $outputPath; format = $filterName } }
+    }
+
+    "exportRangeAsImage" {
+        $excel = Get-WpsExcel
+        if ($null -eq $excel) { Output-Json @{ success = $false; error = "WPS Excel not running" }; exit }
+        $sheet = if ($p.sheet) { $excel.ActiveWorkbook.Sheets.Item($p.sheet) } else { $excel.ActiveSheet }
+        $outputPath = if ($p.outputPath) { $p.outputPath } else { $p.path }
+        if ([string]::IsNullOrEmpty($outputPath)) { Output-Json @{ success = $false; error = "Missing outputPath" }; exit }
+        if ([string]::IsNullOrEmpty($p.range)) { Output-Json @{ success = $false; error = "Missing range" }; exit }
+        $rawFormat = if ($p.format) { $p.format.ToString().ToUpper() } else { "PNG" }
+        $filterName = if ($rawFormat -eq "JPEG") { "JPG" } else { $rawFormat }
+        $range = $sheet.Range($p.range)
+        $tempChart = $null
+        try {
+            $range.CopyPicture(1, 2)
+            $tempChart = $sheet.ChartObjects().Add(0, 0, $range.Width, $range.Height)
+            $tempChart.Activate()
+            $tempChart.Chart.Paste()
+            $tempChart.Chart.Export($outputPath, $filterName)
+            $tempChart.Delete()
+            $tempChart = $null
+            Output-Json @{ success = $true; data = @{ range = $p.range; outputPath = $outputPath; format = $filterName } }
+        } catch {
+            if ($null -ne $tempChart) { try { $tempChart.Delete() } catch {} }
+            Output-Json @{ success = $false; error = "导出区域为图片失败: $($_.Exception.Message)" }
+        }
+    }
+
     "removeDuplicates" {
         $excel = Get-WpsExcel
         if ($null -eq $excel) { Output-Json @{ success = $false; error = "WPS Excel not running" }; exit }
@@ -2850,6 +2891,22 @@ switch ($Action) {
         if ($null -ne $p.height) { $shape.Height = $p.height }
         if ($null -ne $p.rotation) { $shape.Rotation = $p.rotation }
         Output-Json @{ success = $true; data = @{ name = $shape.Name } }
+    }
+
+    "exportSlideAsImage" {
+        $ppt = Get-WpsPpt
+        if ($null -eq $ppt) { Output-Json @{ success = $false; error = "WPS PPT not running" }; exit }
+        $pres = $ppt.ActivePresentation
+        $slideIndex = if ($p.slideIndex) { $p.slideIndex } else { 1 }
+        $slide = $pres.Slides.Item($slideIndex)
+        $outputPath = if ($p.outputPath) { $p.outputPath } else { $p.path }
+        if ([string]::IsNullOrEmpty($outputPath)) { Output-Json @{ success = $false; error = "Missing outputPath" }; exit }
+        $rawFormat = if ($p.format) { $p.format.ToString().ToUpper() } else { "PNG" }
+        $filterName = if ($rawFormat -eq "JPEG") { "JPG" } else { $rawFormat }
+        $width = if ($p.width) { $p.width } else { 1280 }
+        $height = if ($p.height) { $p.height } else { 720 }
+        $slide.Export($outputPath, $filterName, $width, $height)
+        Output-Json @{ success = $true; data = @{ slideIndex = $slideIndex; outputPath = $outputPath; format = $filterName; width = $width; height = $height } }
     }
 
     "insertPptTable" {
