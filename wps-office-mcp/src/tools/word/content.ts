@@ -2,12 +2,20 @@
  * Input: Word 内容操作参数
  * Output: 文档内容变更结果
  * Pos: Word 内容工具实现。一旦我被修改，请更新我的头部注释，以及所属文件夹的md。
- * Word内容操作Tools - 老王的文档编辑神器
- * 处理文档内容的插入、查找替换等操作
+ * Word内容操作Tools - 文档内容编辑模块
+ * 处理文档内容的插入、查找替换、表格、段落格式等操作
  *
  * 包含：
  * - wps_word_insert_text: 插入文本到文档
  * - wps_word_find_replace: 查找替换功能
+ * - wps_word_insert_table: 插入表格
+ * - wps_word_set_paragraph: 设置段落格式
+ * - wps_word_get_active_document: 获取当前文档信息
+ * - wps_word_insert_image: 插入图片
+ * - wps_word_insert_page_break: 插入分页符
+ * - wps_word_set_font_style: 设置字体样式
+ * - wps_word_insert_comment: 插入批注
+ * - wps_word_set_text_color: 设置文字颜色
  * - wps_word_get_paragraphs: 获取文档段落结构
  * - wps_word_find_in_document: 查找文本返回位置（不替换）
  * - wps_word_smart_fill_field: 智能填写模板字段
@@ -278,6 +286,381 @@ export const findReplaceHandler: ToolHandler = async (
       content: [{ type: 'text', text: `查找替换出错: ${errMsg}` }],
       error: errMsg,
     };
+  }
+};
+
+/**
+ * 插入表格到文档光标位置
+ */
+export const insertTableDefinition: ToolDefinition = {
+  name: 'wps_word_insert_table',
+  description: '在Word文档光标位置插入表格',
+  category: ToolCategory.DOCUMENT,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      rows: { type: 'number', description: '表格行数' },
+      cols: { type: 'number', description: '表格列数' },
+    },
+    required: ['rows', 'cols'],
+  },
+};
+
+export const insertTableHandler: ToolHandler = async (
+  args: Record<string, unknown>
+): Promise<ToolCallResult> => {
+  const { rows, cols } = args as { rows: number; cols: number };
+  try {
+    const response = await wpsClient.executeMethod<{ success: boolean; message: string }>(
+      'insertTable',
+      { rows, cols },
+      WpsAppType.WRITER
+    );
+    if (response.success) {
+      return {
+        id: uuidv4(),
+        success: true,
+        content: [{ type: 'text', text: `已插入 ${rows}×${cols} 表格` }],
+      };
+    }
+    return {
+      id: uuidv4(),
+      success: false,
+      content: [{ type: 'text', text: `插入表格失败: ${response.error}` }],
+      error: response.error,
+    };
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    return { id: uuidv4(), success: false, content: [{ type: 'text', text: `插入表格出错: ${errMsg}` }], error: errMsg };
+  }
+};
+
+/**
+ * 设置当前段落格式
+ */
+export const setParagraphDefinition: ToolDefinition = {
+  name: 'wps_word_set_paragraph',
+  description: '设置当前段落格式（对齐方式、行间距等）',
+  category: ToolCategory.DOCUMENT,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      alignment: { type: 'string', description: '对齐方式: left/center/right/justify' },
+      lineSpacing: { type: 'number', description: '行间距倍数，如1.5、2' },
+    },
+  },
+};
+
+export const setParagraphHandler: ToolHandler = async (
+  args: Record<string, unknown>
+): Promise<ToolCallResult> => {
+  const params = args as { alignment?: string; lineSpacing?: number };
+  try {
+    const response = await wpsClient.executeMethod<{ success: boolean; message: string }>(
+      'setParagraph',
+      params,
+      WpsAppType.WRITER
+    );
+    if (response.success) {
+      return {
+        id: uuidv4(),
+        success: true,
+        content: [{ type: 'text', text: '段落格式已设置' }],
+      };
+    }
+    return {
+      id: uuidv4(),
+      success: false,
+      content: [{ type: 'text', text: `设置段落失败: ${response.error}` }],
+      error: response.error,
+    };
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    return { id: uuidv4(), success: false, content: [{ type: 'text', text: `设置段落出错: ${errMsg}` }], error: errMsg };
+  }
+};
+
+/**
+ * 获取当前活动文档信息
+ */
+export const getActiveDocumentDefinition: ToolDefinition = {
+  name: 'wps_word_get_active_document',
+  description: '获取当前WPS Writer活动文档的基本信息',
+  category: ToolCategory.DOCUMENT,
+  inputSchema: {
+    type: 'object',
+    properties: {},
+  },
+};
+
+export const getActiveDocumentHandler: ToolHandler = async (
+  _args: Record<string, unknown>
+): Promise<ToolCallResult> => {
+  try {
+    const response = await wpsClient.executeMethod<{
+      success: boolean;
+      name: string;
+      path: string;
+      pageCount: number;
+      wordCount: number;
+    }>(
+      'getActiveDocument',
+      {},
+      WpsAppType.WRITER
+    );
+    if (response.success && response.data) {
+      const d = response.data;
+      return {
+        id: uuidv4(),
+        success: true,
+        content: [{ type: 'text', text: `当前文档: ${d.name}\n路径: ${d.path}\n页数: ${d.pageCount}\n字数: ${d.wordCount}` }],
+      };
+    }
+    return {
+      id: uuidv4(),
+      success: false,
+      content: [{ type: 'text', text: `获取文档信息失败: ${response.error}` }],
+      error: response.error,
+    };
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    return { id: uuidv4(), success: false, content: [{ type: 'text', text: `获取文档信息出错: ${errMsg}` }], error: errMsg };
+  }
+};
+
+/**
+ * 在文档中插入图片
+ */
+export const insertImageDefinition: ToolDefinition = {
+  name: 'wps_word_insert_image',
+  description: `在Word文档中插入图片。
+
+使用场景：
+- "在文档中插入一张图片"
+- "把这个截图放到文档里"
+- "在光标位置插入logo"`,
+  category: ToolCategory.DOCUMENT,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      imagePath: {
+        type: 'string',
+        description: '图片文件路径',
+      },
+      width: {
+        type: 'number',
+        description: '图片宽度（磅），可选',
+      },
+      height: {
+        type: 'number',
+        description: '图片高度（磅），可选',
+      },
+    },
+    required: ['imagePath'],
+  },
+};
+
+export const insertImageHandler: ToolHandler = async (
+  args: Record<string, unknown>
+): Promise<ToolCallResult> => {
+  const { imagePath, width, height } = args as {
+    imagePath: string;
+    width?: number;
+    height?: number;
+  };
+
+  if (!imagePath || imagePath.trim() === '') {
+    return {
+      id: uuidv4(),
+      success: false,
+      content: [{ type: 'text', text: '图片路径不能为空！' }],
+      error: '图片路径为空',
+    };
+  }
+
+  try {
+    // 跨平台参数对齐：macOS/Windows 底层均优先读取 params.path，同时保留 imagePath/filePath 别名
+    const response = await wpsClient.executeMethod<{
+      success: boolean;
+      message: string;
+    }>(
+      'insertImage',
+      { imagePath, path: imagePath, filePath: imagePath, width, height },
+      WpsAppType.WRITER
+    );
+
+    if (response.success) {
+      return {
+        id: uuidv4(),
+        success: true,
+        content: [
+          {
+            type: 'text',
+            text: `图片插入成功！\n路径: ${imagePath}${width ? `\n宽度: ${width}磅` : ''}${height ? `\n高度: ${height}磅` : ''}`,
+          },
+        ],
+      };
+    }
+    return {
+      id: uuidv4(),
+      success: false,
+      content: [{ type: 'text', text: `插入图片失败: ${response.error}` }],
+      error: response.error,
+    };
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    return {
+      id: uuidv4(),
+      success: false,
+      content: [{ type: 'text', text: `插入图片出错: ${errMsg}` }],
+      error: errMsg,
+    };
+  }
+};
+
+/**
+ * 导出所有内容操作相关的Tools
+ */
+export const insertPageBreakDefinition: ToolDefinition = {
+  name: 'wps_word_insert_page_break',
+  description: '在文档光标位置插入分页符',
+  category: ToolCategory.DOCUMENT,
+  inputSchema: {
+    type: 'object',
+    properties: {},
+    required: [],
+  },
+};
+
+export const insertPageBreakHandler: ToolHandler = async (
+  _args: Record<string, unknown>
+): Promise<ToolCallResult> => {
+  try {
+    const response = await wpsClient.executeMethod<{ success: boolean; message: string }>(
+      'insertPageBreak',
+      {},
+      WpsAppType.WRITER
+    );
+    return {
+      id: uuidv4(),
+      success: response.success,
+      content: [{ type: 'text', text: response.success ? '分页符已插入' : (response.data as any)?.message || '插入失败' }],
+    };
+  } catch (e: any) {
+    return { id: uuidv4(), success: false, content: [{ type: 'text', text: `插入分页符出错: ${e.message}` }], error: e.message };
+  }
+};
+
+export const setFontStyleDefinition: ToolDefinition = {
+  name: 'wps_word_set_font_style',
+  description: '设置选中文字的字体样式属性',
+  category: ToolCategory.DOCUMENT,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      fontName: { type: 'string', description: '字体名称' },
+      fontSize: { type: 'number', description: '字号' },
+      bold: { type: 'boolean', description: '是否加粗' },
+      italic: { type: 'boolean', description: '是否斜体' },
+    },
+    required: [],
+  },
+};
+
+export const setFontStyleHandler: ToolHandler = async (
+  args: Record<string, unknown>
+): Promise<ToolCallResult> => {
+  try {
+    const response = await wpsClient.executeMethod<{ success: boolean; message: string }>(
+      'setFont',
+      args,
+      WpsAppType.WRITER
+    );
+    return {
+      id: uuidv4(),
+      success: response.success,
+      content: [{ type: 'text', text: response.success ? '字体已设置' : (response.data as any)?.message || '设置失败' }],
+    };
+  } catch (e: any) {
+    return { id: uuidv4(), success: false, content: [{ type: 'text', text: `设置字体出错: ${e.message}` }], error: e.message };
+  }
+};
+
+/**
+ * 插入批注到文档选中内容
+ */
+export const insertCommentDefinition: ToolDefinition = {
+  name: 'wps_word_insert_comment',
+  description: '在Word文档选中内容处插入批注',
+  category: ToolCategory.DOCUMENT,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      text: { type: 'string', description: '批注内容' },
+    },
+    required: ['text'],
+  },
+};
+
+export const insertCommentHandler: ToolHandler = async (
+  args: Record<string, unknown>
+): Promise<ToolCallResult> => {
+  const { text } = args as { text: string };
+  if (!text || text.trim() === '') {
+    return { id: uuidv4(), success: false, content: [{ type: 'text', text: '批注内容不能为空！' }], error: '批注内容为空' };
+  }
+  try {
+    const response = await wpsClient.executeMethod<{ success: boolean; message: string }>(
+      'addComment',
+      { text },
+      WpsAppType.WRITER
+    );
+    return {
+      id: uuidv4(),
+      success: response.success,
+      content: [{ type: 'text', text: response.success ? '批注已插入' : (response.data as any)?.message || '插入失败' }],
+    };
+  } catch (e: any) {
+    return { id: uuidv4(), success: false, content: [{ type: 'text', text: `插入批注出错: ${e.message}` }], error: e.message };
+  }
+};
+
+/**
+ * 设置选中文字的颜色
+ */
+export const setTextColorDefinition: ToolDefinition = {
+  name: 'wps_word_set_text_color',
+  description: '设置Word文档中选中文字的颜色',
+  category: ToolCategory.DOCUMENT,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      color: { type: 'string', description: '颜色值，如 "#FF0000"、"red"' },
+    },
+    required: ['color'],
+  },
+};
+
+export const setTextColorHandler: ToolHandler = async (
+  args: Record<string, unknown>
+): Promise<ToolCallResult> => {
+  const { color } = args as { color: string };
+  if (!color || color.trim() === '') {
+    return { id: uuidv4(), success: false, content: [{ type: 'text', text: '颜色值不能为空！' }], error: '颜色值为空' };
+  }
+  try {
+    const response = await wpsClient.executeMethod<{ success: boolean; message: string }>(
+      'setTextColor', // NOTE: macOS未实现，仅Windows支持
+      { color },
+      WpsAppType.WRITER
+    );
+    return {
+      id: uuidv4(),
+      success: response.success,
+      content: [{ type: 'text', text: response.success ? `文字颜色已设置为 ${color}` : (response.data as any)?.message || '设置失败' }],
+    };
+  } catch (e: any) {
+    return { id: uuidv4(), success: false, content: [{ type: 'text', text: `设置文字颜色出错: ${e.message}` }], error: e.message };
   }
 };
 
@@ -719,6 +1102,14 @@ export const replaceBookmarkContentHandler: ToolHandler = async (
 export const contentTools: RegisteredTool[] = [
   { definition: insertTextDefinition, handler: insertTextHandler },
   { definition: findReplaceDefinition, handler: findReplaceHandler },
+  { definition: insertTableDefinition, handler: insertTableHandler },
+  { definition: setParagraphDefinition, handler: setParagraphHandler },
+  { definition: getActiveDocumentDefinition, handler: getActiveDocumentHandler },
+  { definition: insertImageDefinition, handler: insertImageHandler },
+  { definition: insertPageBreakDefinition, handler: insertPageBreakHandler },
+  { definition: setFontStyleDefinition, handler: setFontStyleHandler },
+  { definition: insertCommentDefinition, handler: insertCommentHandler },
+  { definition: setTextColorDefinition, handler: setTextColorHandler },
   { definition: getParagraphsDefinition, handler: getParagraphsHandler },
   { definition: findInDocumentDefinition, handler: findInDocumentHandler },
   { definition: smartFillFieldDefinition, handler: smartFillFieldHandler },

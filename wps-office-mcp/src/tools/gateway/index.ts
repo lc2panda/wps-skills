@@ -27,8 +27,9 @@ export interface ToolIndexItem {
 }
 
 import { wpsClient } from '../../client/wps-client';
-import { ToolCallResult } from '../../types/tools';
+import { ToolCallResult, ToolHandler } from '../../types/tools';
 import { WpsAppType } from '../../types/wps';
+import { allTools } from '../index';
 
 export interface ToolParamSchema {
   type: 'string' | 'number' | 'boolean' | 'object' | 'array';
@@ -42,6 +43,31 @@ export interface ToolParamSchema {
 // verified: PowerShell 脚本 + wps-client.ts 中已完整实现并测试
 // indexed: 仅在 Gateway 索引中存在，通过 executeMethod 动态调用
 // stub: 有占位实现，尚未完整测试
+
+// 将 wps_xxx_xxx 风格的短名称转为驼峰 (set_font → setFont)
+function toCamelCase(snake: string): string {
+  return snake.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+}
+
+// 将驼峰参数名转为蛇形 (fontName → font_name)，使 COM schema params
+// 能与 TS handler 的 snake_case 参数名匹配
+function camelToSnake(obj: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    const snakeKey = key.replace(/([A-Z])/g, '_$1').toLowerCase();
+    result[snakeKey] = value;
+  }
+  return result;
+}
+
+// 从注册工具中预先构建 handler 映射表：COM 短名 → TS handler
+// 使 executeTool 能优先走带参数校验的 TS handler，避免裸调 PS1
+const HANDLER_MAP = new Map<string, ToolHandler>();
+for (const tool of allTools) {
+  const shortName = tool.definition.name.replace(/^wps_(word|excel|ppt|common)_/i, '');
+  const camelName = toCamelCase(shortName);
+  HANDLER_MAP.set(camelName, tool.handler);
+}
 
 const VERIFIED_TOOLS = new Set([
   // === Common ===
@@ -58,6 +84,7 @@ const VERIFIED_TOOLS = new Set([
   'insertTable', 'insertImage', 'setPageSetup', 'insertHeader', 'insertFooter',
   'insertHyperlink', 'insertPageBreak', 'setHyperlink',
   'smartFillField', 'addComment', 'getComments', 'afterColon', 'afterLabel', 'insertText',
+  'switchDocument', 'getOpenDocuments',
   // === Excel ===
   'getActiveWorkbook', 'getCellValue', 'setCellValue', 'getRangeData', 'setRangeData',
   'setFormula', 'getFormula', 'setArrayFormula', 'diagnoseFormula',
@@ -438,6 +465,23 @@ export async function executeTool(options: ExecuteOptions): Promise<ToolCallResu
       content: [{ type: 'text', text: JSON.stringify({ error: `工具 "${tool_name}" 不存在`, suggestion: '使用 wps_office_search 查找可用工具' }) }]
     };
   }
+  // 优先使用 TS handler（带参数校验、类型安全、详细错误信息）
+  const handler = HANDLER_MAP.get(tool_name);
+  if (handler) {
+    // 将 COM 风格的 camelCase 参数转为 TS handler 的 snake_case
+    const convertedArgs = camelToSnake(args);
+    try {
+      return await handler(convertedArgs);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        id: '',
+        success: false,
+        content: [{ type: 'text', text: JSON.stringify({ error: `TS handler 执行失败`, details: errorMessage, tool: tool_name, params: args }) }]
+      };
+    }
+  }
+  // 无 TS handler，直接透传 PS1（兜底）
   try {
     const result = await wpsClient.executeMethod(tool_name, args as Record<string, unknown>, indexItem.appType);
     return {
