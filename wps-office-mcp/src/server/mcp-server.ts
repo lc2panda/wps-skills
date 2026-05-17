@@ -4,7 +4,7 @@
  * Pos: MCP Server 核心实现。一旦我被修改，请更新我的头部注释，以及所属文件夹的md。
  * MCP Server实现 - 老王的MCP协议实现
  * 这是整个系统的核心，处理MCP协议通信
- * 基于stdio传输，Claude Desktop就是这么连的
+ * 基于stdio传输，OpenCode 就是通过这种方式连接的
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -19,9 +19,9 @@ import {
 import { toolRegistry, ToolRegistry } from './tool-registry';
 import { wpsClient } from '../client/wps-client';
 import { ToolCallResult, ToolCategory } from '../types/tools';
-import { allTools } from '../tools';
 import { createChildLogger } from '../utils/logger';
 import { McpError } from '../utils/error';
+import { searchTools, executeTool } from '../tools/gateway';
 
 const logger = createChildLogger('McpServer');
 
@@ -675,6 +675,105 @@ export class WpsMcpServer {
     );
 
     logger.info(`Registered ${this.registry.size} built-in tools`);
+
+    // ==================== 网关工具 (渐进式加载) ====================
+    // 只暴露 2 个工具：search 和 execute
+    // 具体功能通过这两工具动态发现和执行
+
+    // wps_office_search - 搜索工具
+    this.registry.register(
+      {
+        name: 'wps_office_search',
+        description: `WPS Office 工具搜索器。
+
+**使用前必读**：
+1. 当用户请求任何 WPS 文档操作时，必须先调用此工具查找相关功能
+2. 不要猜测或假设工具名称，所有操作都通过 search->execute 两阶段完成
+3. 示例流程：
+   - 用户："在文档中插入3行4列的表格"
+   - 调用：wps_office_search(query="插入表格", category="word")
+   - 根据返回结果，调用 wps_office_execute 执行`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: '搜索关键词，如"设置字体"、"插入表格"',
+            },
+            category: {
+              type: 'string',
+              description: '按分类筛选：word/excel/ppt/common',
+              enum: ['word', 'excel', 'ppt', 'common'],
+            },
+            limit: {
+              type: 'number',
+              description: '返回结果数量限制，默认10',
+              default: 10,
+            },
+          },
+          required: ['query'],
+        },
+        category: ToolCategory.COMMON,
+      },
+      async (args) => {
+        const query = args.query as string;
+        const category = args.category as string | undefined;
+        const limit = (args.limit as number) || 10;
+
+        const result = searchTools({ query, category, limit });
+
+        return {
+          id: '',
+          success: true,
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(result),
+            },
+          ],
+        };
+      }
+    );
+
+    // wps_office_execute - 执行工具
+    this.registry.register(
+      {
+        name: 'wps_office_execute',
+        description: `执行通过 wps_office_search 找到的工具。
+
+**使用前必读**：
+1. 必须先调用 wps_office_search 找到正确的工具名称
+2. 参数必须符合 search 返回的 schema 定义
+3. 示例：
+   - wps_office_execute("wps_word_set_font", {fontName: "微软雅黑", fontSize: 14})
+   - wps_office_execute("wps_word_insert_text", {text: "内容", position: "cursor"})`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tool_name: {
+              type: 'string',
+              description: '从 wps_office_search 获取的工具名称',
+            },
+            arguments: {
+              type: 'object',
+              description: '工具参数对象',
+            },
+          },
+          required: ['tool_name', 'arguments'],
+        },
+        category: ToolCategory.COMMON,
+      },
+      async (args) => {
+        const tool_name = args.tool_name as string;
+        const arguments_ = args.arguments as Record<string, unknown>;
+
+        const result = await executeTool({ tool_name, arguments: arguments_ });
+
+        return result;
+      }
+    );
+
+    logger.info('Registered gateway tools: wps_office_search, wps_office_execute');
   }
 
   /**
@@ -691,9 +790,9 @@ export class WpsMcpServer {
     // 注册内置Tools
     this.registerBuiltinTools();
 
-    // 注册Excel、Word、PPT专业Tools - 这才是老王的核心功能
-    this.registry.registerAll(allTools);
-    logger.info(`Registered ${allTools.length} professional tools (Excel/Word/PPT)`);
+    // 注册网关工具 (渐进式加载，隐藏 250+ 专业工具)
+    // 所有功能通过 wps_office_search + wps_office_execute 调用
+    // wps_execute_method 作为兜底
 
     // 创建stdio传输层
     const transport = new StdioServerTransport();

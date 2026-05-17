@@ -28,14 +28,16 @@ import { errorUtils } from '../utils/error';
 import { macPollServer } from './mac-poll-server';
 
 // 平台判断
-const IS_MAC = os.platform() === 'darwin';
+function isMacPlatform() {
+  return os.platform() === 'darwin';
+}
 // const IS_WINDOWS = os.platform() === 'win32';  // 暂时不用，保留备用
 
 // PowerShell脚本路径 (Windows)
 const PS_SCRIPT_PATH = path.join(__dirname, '../../scripts/wps-com.ps1');
 
-// Mac轮询服务器端口（支持环境变量 WPS_MCP_PORT 配置）
-const MAC_POLL_PORT = parseInt(process.env.WPS_MCP_PORT || '58891', 10);
+// Mac轮询服务器端口
+const MAC_POLL_PORT = 58891;
 
 /**
  * 执行Mac轮询调用
@@ -60,15 +62,11 @@ async function execMacPoll(action: string, params: Record<string, unknown> = {})
   }
 }
 
-// PowerShell 默认超时（毫秒）
-const PS_TIMEOUT = 30000;
-
 /**
  * 执行PowerShell命令 (Windows)
  */
 async function execPowerShell(action: string, params: Record<string, unknown> = {}): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    // JSON参数通过spawn args数组传递，Node自动处理Windows引号转义
     const paramsJson = JSON.stringify(params);
     const args = [
       '-ExecutionPolicy', 'Bypass',
@@ -86,14 +84,6 @@ async function execPowerShell(action: string, params: Record<string, unknown> = 
 
     let stdout = '';
     let stderr = '';
-    let killed = false;
-
-    // 超时保护：防止PowerShell进程挂起
-    const timeoutHandle = setTimeout(() => {
-      killed = true;
-      ps.kill('SIGTERM');
-      reject(new Error(`PowerShell 执行超时（${PS_TIMEOUT}ms）: ${action}`));
-    }, PS_TIMEOUT);
 
     ps.stdout.on('data', (data) => {
       stdout += data.toString();
@@ -104,30 +94,23 @@ async function execPowerShell(action: string, params: Record<string, unknown> = 
     });
 
     ps.on('close', (code) => {
-      clearTimeout(timeoutHandle);
-      if (killed) return; // 已超时处理，忽略后续事件
-
-      if (code !== 0) {
-        const errMsg = stderr || `PowerShell 非零退出码: ${code}`;
-        log.error('PowerShell error', { stderr, code, action });
-        reject(new Error(errMsg));
+      if (code !== 0 && stderr) {
+        log.error('PowerShell error', { stderr, code });
+        reject(new Error(stderr));
         return;
       }
 
       try {
         const result = JSON.parse(stdout.trim());
         resolve(result);
-      } catch (_e) {
-        log.error('Failed to parse PowerShell output', { stdout, action });
-        reject(new Error(`PowerShell 输出解析失败（非有效JSON）: ${stdout.substring(0, 200)}`));
+      } catch (e) {
+        log.error('Failed to parse PowerShell output', { stdout });
+        reject(new Error(`Invalid JSON output: ${stdout}`));
       }
     });
 
     ps.on('error', (err) => {
-      clearTimeout(timeoutHandle);
-      if (killed) return;
-      log.error('PowerShell spawn error', { error: err.message, action });
-      reject(new Error(`无法启动 PowerShell 进程: ${err.message}`));
+      reject(err);
     });
   });
 }
@@ -138,11 +121,56 @@ async function execPowerShell(action: string, params: Record<string, unknown> = 
  * Windows: PowerShell调用COM接口
  */
 async function execWpsAction(action: string, params: Record<string, unknown> = {}): Promise<unknown> {
-  if (IS_MAC) {
+  if (isMacPlatform()) {
     return execMacPoll(action, params);
   } else {
     return execPowerShell(action, params);
   }
+}
+
+// 超时时间（毫秒）
+const COM_TIMEOUT = 5000;
+
+/**
+ * 带超时和重试的WPS调用
+ * 注：COM 操作无法真正取消，此实现确保超时后不再等待并快速失败
+ */
+async function execWpsActionWithRetry(action: string, params: Record<string, unknown> = {}, maxRetries: number = 3): Promise<unknown> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // 使用 Promise.race 实现超时
+      // 注意：无法真正取消 COM 调用，但可确保不会无限等待
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('COM 调用超时（' + COM_TIMEOUT + 'ms）')), COM_TIMEOUT);
+      });
+
+      const result = await Promise.race([
+        execWpsAction(action, params),
+        timeoutPromise
+      ]);
+
+      return result;
+    } catch (error) {
+      lastError = error as Error;
+      const errMsg = error instanceof Error ? error.message : String(error);
+
+      // 超时是快速失败的友好错误，不记录为严重警告
+      if (errMsg.includes('超时')) {
+        log.info(`WPS call timeout, attempt ${attempt}/${maxRetries}`, { action });
+      } else {
+        log.warn(`WPS call failed, attempt ${attempt}/${maxRetries}`, { action, error: errMsg });
+      }
+
+      if (attempt < maxRetries) {
+        // 等待后重试（指数退避）
+        await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+      }
+    }
+  }
+
+  throw lastError || new Error('WPS call failed after retries');
 }
 
 /**
@@ -155,7 +183,7 @@ export class WpsClient {
 
   constructor(_config?: Partial<WpsEndpointConfig>) {
     this.status = { connected: false };
-    const method = IS_MAC ? 'HTTP (Mac Addon)' : 'PowerShell COM';
+    const method = isMacPlatform() ? 'HTTP (Mac Addon)' : 'PowerShell COM';
     log.info('WPS Client initialized', { method, platform: os.platform() });
   }
 
@@ -167,7 +195,7 @@ export class WpsClient {
     logRequest(action, params);
 
     try {
-      const result = await execWpsAction(action, params) as WpsApiResponse<T>;
+      const result = await execWpsActionWithRetry(action, params, 3) as WpsApiResponse<T>;
       const duration = Date.now() - startTime;
       logResponse(action, result.success, duration);
 
@@ -181,7 +209,7 @@ export class WpsClient {
       const duration = Date.now() - startTime;
       logResponse(action, false, duration);
       this.status.connected = false;
-      throw errorUtils.wrap(error, `WPS 调用失败（${IS_MAC ? 'macOS轮询' : 'PowerShell COM'}）: ${action}`);
+      throw errorUtils.wrap(error, `WPS COM call failed: ${action}`);
     }
   }
 
@@ -190,23 +218,12 @@ export class WpsClient {
    */
   async callApi<T = unknown>(request: WpsApiRequest): Promise<WpsApiResponse<T>> {
     const actionMap: Record<string, string> = {
-      // Excel 旧API
       'workbook.getActive': 'getActiveWorkbook',
       'cell.getValue': 'getCellValue',
       'cell.setValue': 'setCellValue',
       'range.getData': 'getRangeData',
       'range.setData': 'setRangeData',
-      // Word 旧API
-      'document.getActive': 'getActiveDocument',
-      'document.getText': 'getDocumentText',
-      'document.insertText': 'insertText',
-      // PPT 旧API
-      'presentation.getActive': 'getActivePresentation',
-      'presentation.addSlide': 'addSlide',
-      // 通用旧API
       'file.save': 'save',
-      'file.saveAs': 'saveAs',
-      'file.open': 'openFile',
       'ping': 'ping',
     };
     const action = actionMap[request.method] || request.method;

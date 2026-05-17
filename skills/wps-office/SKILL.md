@@ -1,6 +1,6 @@
 ---
 name: wps-office
-description: WPS Office 跨应用智能助手，统一管理 Excel、Word、PPT 三大应用，处理跨应用操作和通用功能
+description: "WPS Office 跨应用智能助手，统一管理 Excel、Word、PPT 三大应用，处理跨应用操作和通用功能。适用于：跨应用操作、格式转换、批量处理、文档管理。当用户提及 WPS Office、跨应用、格式转换、批量操作、文档转换时使用此 skill。"
 ---
 
 # WPS Office 跨应用智能助手
@@ -82,12 +82,11 @@ description: WPS Office 跨应用智能助手，统一管理 Excel、Word、PPT 
 
 ### Step 2: 状态检查
 
-按需调用各应用的状态查询工具：
-- `wps_word_get_active_document` 获取当前文字文档信息
-- `wps_word_get_open_documents` 获取所有打开的Word文档列表
-- `wps_excel_get_sheet_list` 获取当前工作簿的工作表列表
-- `wps_ppt_get_open_presentations` 获取所有打开的演示文稿列表
-- `wps_ppt_get_slide_count` 获取当前演示文稿幻灯片数量
+调用 `wps_office_check_status` 检查应用状态：
+- WPS 文字是否运行
+- WPS 表格是否运行
+- WPS 演示是否运行
+- 当前活动的应用和文档
 
 ### Step 3: 执行操作
 
@@ -148,64 +147,48 @@ description: WPS Office 跨应用智能助手，统一管理 Excel、Word、PPT 
 
 ### 文件操作
 
-文件操作按应用类型使用对应的专项工具：
-
 | 操作 | 工具 | 说明 |
 |-----|------|-----|
-| 打开Word文档 | `wps_word_open_document` | 打开指定路径的Word文档 |
-| 新建PPT | `wps_ppt_create_presentation` | 创建新的空白演示文稿 |
-| 打开PPT | `wps_ppt_open_presentation` | 打开指定路径的PPT文件 |
-| 关闭PPT | `wps_ppt_close_presentation` | 关闭演示文稿（可选是否保存） |
+| 新建文档 | `wps_office_new_document` | 创建新的空白文档 |
+| 打开文件 | `wps_office_open_file` | 打开指定路径的文件 |
+| 保存文档 | `wps_office_save_document` | 保存当前文档 |
+| 另存为 | `wps_office_save_as` | 另存为指定格式/位置 |
+| 关闭文档 | `wps_office_close_document` | 关闭当前文档 |
 
-> 注意：保存、另存为等操作可通过各应用专项工具或底层API实现。
+### 导出操作
 
-### 导出与转换操作
-
-| 操作 | 工具 | 适用应用 |
+| 格式 | 工具 | 适用应用 |
 |-----|------|---------|
-| 转换为PDF | `wps_convert_to_pdf` | Word/Excel/PPT |
-| 格式互转 | `wps_convert_format` | Word/Excel/PPT |
+| PDF | `wps_office_export_pdf` | 全部 |
+| 图片 | `wps_office_export_image` | Word/PPT |
+| HTML | `wps_office_export_html` | Word |
+
+### 打印操作
 
 ```
-wps_convert_to_pdf
-  - outputPath: PDF输出路径（可选，不指定则使用原文件名.pdf）
-  - openAfterExport: 导出后是否自动打开PDF（默认false）
-
-wps_convert_format
-  - targetFormat: 目标格式扩展名（如 doc, xlsx, ppt, rtf, csv, html 等）（必填）
-  - outputPath: 输出路径（可选，不指定则使用原文件名改为新扩展名）
+wps_office_print
+  - copies: 打印份数
+  - pages: 页面范围（如 "1-5" 或 "all"）
+  - printer: 打印机名称（可选）
 ```
 
-**支持的转换格式**：
-- Word: doc, docx, rtf, txt, html, xml
-- Excel: xls, xlsx, xlsm, xlsb, csv, html
-- PPT: ppt, pptx, pptm, html, png, jpg, gif, bmp
+## 应用切换与协调
 
-## 应用状态查询
-
-### 获取各应用当前状态
+### 激活应用
 
 ```
-wps_word_get_active_document    → 获取当前WPS文字文档信息
-wps_word_get_open_documents     → 获取所有打开的Word文档列表
-wps_excel_get_sheet_list        → 获取当前工作簿的工作表列表
-wps_excel_get_selection         → 获取当前选中区域信息
-wps_ppt_get_open_presentations  → 获取所有打开的演示文稿列表
-wps_ppt_get_slide_count         → 获取当前演示文稿幻灯片数量
-wps_ppt_get_slide_info          → 获取指定幻灯片详细信息
+wps_office_activate_app
+  - app: "word" | "excel" | "ppt"
 ```
 
-## 跨应用数据传递
-
-通过各应用的读写工具实现数据中转：
+### 获取当前状态
 
 ```
-Excel读取 → wps_excel_read_range    读取指定区域数据
-Excel写入 → wps_excel_write_range   写入数据到指定区域
-Word读取  → wps_word_get_document_text  获取文档文本内容
-Word写入  → wps_word_insert_text        插入文本内容
-PPT读取   → wps_ppt_get_slide_info      获取幻灯片内容
-PPT写入   → wps_ppt_set_shape_text      设置形状文本
+wps_office_get_status
+返回：
+  - activeApp: 当前活动应用
+  - activeDocument: 当前活动文档
+  - runningApps: 正在运行的应用列表
 ```
 
 ## 智能路由逻辑
@@ -284,72 +267,34 @@ ELSE:
 
 ## 可用工具列表
 
-全平台共计 **227个** 已注册MCP工具（Excel 82 + Word 24 + PPT 112 + 通用 9）。
-
-### 通用工具（9个）
+### 网关工具
 
 | 工具名称 | 功能描述 |
 |---------|---------|
-| `wps_convert_to_pdf` | 将当前文档转换为PDF格式（支持Word/Excel/PPT） |
-| `wps_convert_format` | 将当前文档转换为其他格式（doc/xlsx/ppt/rtf/csv/html等） |
-| `wps_common_save` | 保存当前文档 |
-| `wps_common_save_as` | 将当前文档另存为指定路径和格式 |
-| `wps_common_ping` | 检测WPS应用连接状态 |
-| `wps_common_wire_check` | 检查与WPS加载项之间的通信线路状态 |
-| `wps_common_get_app_info` | 获取WPS应用的基本信息 |
-| `wps_common_get_selected_text` | 获取当前文档中选中的文本内容 |
-| `wps_common_set_selected_text` | 替换当前文档中选中的文本内容 |
+| `wps_office_search` | 通过关键词搜索可用工具，返回工具名称和 schema |
+| `wps_office_execute` | 执行搜索到的工具，参数需符合 schema 定义 |
 
-### Excel 专项工具（80个，详见 /wps-excel Skill）
+### 通用工具
 
-| 分类 | 工具数 | 关键工具 |
-|-----|-------|---------|
-| 工作簿管理 | 10 | open/create/close/switch_workbook, get/set_cell_value, get_formula, get_cell_info, clear_range |
-| 公式 | 6 | set/generate/diagnose/evaluate_formula, set_print_area, zoom |
-| 数据处理 | 12 | read/write_range, clean_data, sort_range, find_replace, protect_sheet/workbook 等 |
-| 高级数据 | 7 | auto_filter, copy/paste_range, fill_series, transpose, text_to_columns, subtotal |
-| 图表 | 2 | create/update_chart |
-| 透视表 | 2 | create/update_pivot_table |
-| 工作表管理 | 16 | create/delete/rename/copy/move/switch_sheet, freeze_panes, auto_fill, hide_column, auto_sum 等 |
-| 格式化 | 10 | set_cell_format/style, set_border, merge/unmerge_cells, set_column_width/row_height 等 |
-| 行列 | 8 | insert/delete_rows/columns, hide/show_rows/columns, group_rows |
-| 批注保护 | 7 | delete_cell_comment, get_cell_comments, unprotect_sheet, lock_cells, set_array_formula, insert_excel_image, set_hyperlink |
+| 工具名称 | 功能描述 |
+|---------|---------|
+| `wps_office_check_status` | 检查 WPS 应用状态 |
+| `wps_office_activate_app` | 激活指定应用 |
+| `wps_office_new_document` | 新建文档 |
+| `wps_office_open_file` | 打开文件 |
+| `wps_office_save_document` | 保存文档 |
+| `wps_office_save_as` | 另存为 |
+| `wps_office_close_document` | 关闭文档 |
+| `wps_office_export_pdf` | 导出 PDF |
+| `wps_office_print` | 打印文档 |
 
-### Word 专项工具（24个，详见 /wps-word Skill）
-
-| 分类 | 工具数 | 关键工具 |
-|-----|-------|---------|
-| 格式化 | 5 | set_font, apply_style, set_font_style, set_text_color, set_line_spacing |
-| 内容 | 10 | insert_text, find_replace, insert_table/image/comment/page_break/bookmark/section_break, set_paragraph, set_page_setup |
-| 文档管理 | 9 | get_active/open_documents, switch/open_document, get_document_text, insert_header/footer, generate_toc/doc_toc |
-
-### PPT 专项工具（111个，详见 /wps-ppt Skill）
-
-| 分类 | 工具数 | 关键工具 |
-|-----|-------|---------|
-| 幻灯片基础 | 5 | add_slide, beautify, unify_font, set_font_color, align_objects |
-| 幻灯片操作 | 22 | delete/duplicate/move/copy_slide, get_slide_count/info, switch_slide, set_slide_layout/title/content, find/replace_ppt_text 等 |
-| 演示文稿管理 | 8 | create/open/close_presentation, get_open_presentations, switch_presentation, get/set_master 等 |
-| 文本框 | 7 | add/delete_textbox, get_textboxes, set_textbox_text/style, create_3d_text, set_shape_text |
-| 形状基础 | 10 | add/delete_shape, get_shapes, set_shape_position/style/fill/border/shadow/gradient/transparency |
-| 形状高级 | 6 | align/distribute/group_shapes, duplicate_shape, set_shape_z_order, smart_distribute |
-| 图片 | 4 | insert_image, insert/delete_ppt_image, set_image_style |
-| 表格 | 6 | insert_table, get/set_table_cell, set_table_style/cell_style/row_style |
-| 美化高级 | 7 | apply_color_scheme, auto_beautify_slide, beautify_all_slides, add_title_decoration/page_indicator, create_styled_table/kpi_cards |
-| 动画切换 | 9 | add/remove_animation, get_animations, set_animation_order, add_animation_preset/emphasis_animation, set/remove_slide_transition, apply_transition_to_all |
-| 图表流程图 | 5 | insert_ppt_chart, set_ppt_chart_data/style, create_flow/org_chart |
-| 杂项 | 9 | add_chart, set_animation/background/transition, add/remove_ppt_hyperlink, auto_layout, create_grid/timeline |
-| 数据可视化 | 6 | create_progress_bar/gauge/mini_charts/donut_chart, set_background_gradient/image |
-| 背景页脚3D | 7 | set_background_color, set_slide_number, set_ppt_footer/date_time, set_3d_rotation/depth/material |
-
-### 专项工具路由
+### 专项工具（路由到对应 Skill）
 
 | 工具前缀 | 对应 Skill |
 |---------|-----------|
-| `wps_excel_*` | /wps-excel（80个工具） |
-| `wps_word_*` | /wps-word（24个工具） |
-| `wps_ppt_*` | /wps-ppt（111个工具） |
-| `wps_common_*` / `wps_convert_*` | 通用（9个工具） |
+| `wps_excel_*` | /wps-excel |
+| `wps_word_*` | /wps-word |
+| `wps_ppt_*` | /wps-ppt |
 
 ## 使用建议
 
@@ -361,5 +306,3 @@ ELSE:
 ---
 
 *Skill by lc2panda - WPS MCP Project*
-
-<!-- 审计记录：2026-03-21 T18 同步工具列表至224个（Excel80+Word24+PPT111+通用9），与代码100%同步 -->

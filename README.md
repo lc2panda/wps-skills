@@ -7,8 +7,8 @@ AI编程助手通过自然语言操控WPS Office的MCP工具集。
 ## 项目定位
 
 本项目是MCP Server + Skills框架，让AI助手（Claude Code/Cursor/Augment等）能操控WPS Office。
-- 227个MCP专业工具 + 12个内置工具 = 239个
-- 支持Excel(82工具) / Word(24工具) / PPT(112工具) / 通用(9工具)
+- 230个MCP专业工具 + 12个内置工具 = 242个
+- 支持Excel(82工具) / Word(27工具) / PPT(112工具) / 通用(9工具)
 - 支持macOS、Windows、Linux
 
 ## 前提条件
@@ -113,22 +113,38 @@ kill %1 2>/dev/null
 ```
 Skills层(SKILL.md自然语言指导)
   ↓ Claude Code调用
-MCP Server层(239个工具)
+MCP Server层(242个工具)
   ↓ wpsClient.executeMethod()
 执行层
-  ├── macOS: wps-claude-assistant (227 action, HTTP轮询)
-  └── Windows: wps-com.ps1 (231 action, COM接口)
+  ├── macOS: wps-claude-assistant (230 action, HTTP轮询)
+  └── Windows: wps-com.ps1 (241 action, COM接口)
 ```
 
 ## 工具清单
 
 | 应用 | 工具数 | 主要能力 |
 |------|--------|---------|
-| Excel | 82 | 公式/数据/图表/透视表/工作表/格式/工作簿/行列/批注保护/图片导出 |
-| Word | 24 | 格式/内容/文档管理/页眉页脚/批注 |
-| PPT | 112 | 幻灯片/形状/图片/表格/美化/动画/图表/3D/数据可视化/图片导出 |
-| 通用 | 9 | 保存/连接检测/文本选取/格式转换 |
+| Excel | 82 | 公式生成/诊断/数据处理/图表导出/透视表/工作表/格式/保护 |
+| Word | 27 | 样式/字体/段落/目录/页眉页脚/查找替换/模板填写/书签/批注 |
+| PPT | 112 | 幻灯片/形状/图片/表格/导出/美化/动画/图表/3D/数据可视化 |
+| 通用 | 9 | 保存/连接检测/文本选取/格式转换/PDF导出 |
 | 内置 | 12 | 连接检查/万能方法调用/数据缓存 |
+
+## Skills（自然语言指导）
+
+| Skill | 核心能力 |
+|-------|---------|
+| wps-word | 文档排版/样式管理/目录生成/**模板填写**/查找替换 |
+| wps-excel | 公式生成/数据清洗/图表透视表/数据分析 |
+| wps-ppt | 幻灯片美化/动画设置/内容生成/排版优化 |
+| wps-office | 跨应用协调/格式转换/批量处理 |
+
+### 新增MCP工具
+
+**Word 模板填写**：
+- `wps_word_smart_fill_field`：智能填写Word模板中的字段
+- `wps_word_replace_bookmark_content`：替换书签内容
+- `wps_word_find_in_document`：查找文本位置
 
 ## 故障排除
 

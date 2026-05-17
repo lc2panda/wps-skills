@@ -20,7 +20,7 @@ import { pptTools } from './ppt';
 import { commonTools } from './common';
 
 /**
- * 所有MCP Tools集合（共227个，另有12个内置工具在mcp-server.ts中注册，全局共239个）
+ * 所有MCP Tools集合（共230个，另有12个内置工具在mcp-server.ts中注册，全局共242个）
  *
  * Excel (82个):
  *   公式(6): set_formula, generate_formula, diagnose_formula, set_array_formula, recalculate, auto_sum
@@ -32,7 +32,7 @@ import { commonTools } from './common';
  *   工作簿(10): open_workbook, get_open_workbooks, switch_workbook, close_workbook, create_workbook, get_cell_value, set_cell_value, get_formula, get_cell_info, clear_range
  *   高级数据(7): auto_filter, copy_range, paste_range, fill_series, transpose, text_to_columns, subtotal
  *
- * Word (24个):
+ * Word (27个):
  *   格式化(5): apply_style, set_font, generate_toc, insert_bookmark, set_page_setup
  *   内容(10): insert_text, find_replace, insert_table, set_paragraph, get_active_document, insert_image, add_comment, insert_hyperlink, get_word_count, insert_page_break
  *   文档管理(9): get_open_documents, switch_document, open_document, get_document_text, insert_header, insert_footer, generate_doc_toc, create_document, save_document

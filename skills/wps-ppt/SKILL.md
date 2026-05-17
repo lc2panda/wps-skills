@@ -1,6 +1,6 @@
 ---
 name: wps-ppt
-description: WPS 演示智能助手，通过自然语言操控 PPT，解决排版美化、内容生成、动画设置等痛点问题
+description: "WPS 演示智能助手，通过自然语言操控 PPT，解决排版美化、内容生成、动画设置等痛点问题。适用于：幻灯片美化、内容生成、动画设置、母版编辑、批量处理。当用户提及 PPT、演示文稿、WPS 演示、WPP、幻灯片、美化时使用此 skill。"
 ---
 
 # WPS 演示智能助手
@@ -136,7 +136,7 @@ description: WPS 演示智能助手，通过自然语言操控 PPT，解决排�
 
 ### Step 2: 获取上下文
 
-调用 `wps_ppt_get_open_presentations` 了解当前演示文稿列表（含名称、路径、页数、是否活动），再用 `wps_ppt_get_slide_info` 获取指定页面元素信息：
+调用 `wps_get_active_presentation` 了解当前演示文稿：
 - 演示文稿名称
 - 幻灯片总数
 - 当前幻灯片索引
@@ -151,7 +151,7 @@ description: WPS 演示智能助手，通过自然语言操控 PPT，解决排�
 
 ### Step 4: 执行操作
 
-调用对应的 MCP 工具完成操作，如 `wps_ppt_beautify`、`wps_ppt_add_slide` 等
+调用 `wps_execute_method` (appType: "wpp") 完成操作
 
 ### Step 5: 反馈结果
 
@@ -167,9 +167,9 @@ description: WPS 演示智能助手，通过自然语言操控 PPT，解决排�
 **用户说**：「帮我美化一下这页 PPT」
 
 **处理步骤**：
-1. 调用 `wps_ppt_get_slide_info` 获取当前页面上下文
+1. 获取当前页面上下文
 2. 分析页面元素和布局
-3. 调用 `wps_ppt_beautify`（参数：slide_index, color_scheme）
+3. 调用 `wps_execute_method` (method: "beautifySlide")
 4. 报告美化结果
 
 ### 场景2: 全文风格统一
@@ -177,9 +177,9 @@ description: WPS 演示智能助手，通过自然语言操控 PPT，解决排�
 **用户说**：「把整个 PPT 的风格统一一下」
 
 **处理步骤**：
-1. 调用 `wps_ppt_get_open_presentations` 获取演示文稿上下文
+1. 获取演示文稿上下文
 2. 询问用户期望的风格（商务/科技/简约/创意）
-3. 调用 `wps_ppt_beautify`（参数：beautify_all: true, color_scheme）
+3. 调用 `wps_execute_method` (method: "beautifyAllSlides")
 4. 报告统一结果
 
 ### 场景3: 添加新幻灯片
@@ -187,7 +187,7 @@ description: WPS 演示智能助手，通过自然语言操控 PPT，解决排�
 **用户说**：「在后面加一页，标题是"项目进度"」
 
 **处理步骤**：
-1. 调用 `wps_ppt_add_slide`（参数：layout: "title_content", title: "项目进度"）
+1. 调用 `wps_execute_method` (method: "addSlide")
 2. 告知已添加，询问是否需要添加内容
 
 ### 场景4: 创建流程图
@@ -195,225 +195,250 @@ description: WPS 演示智能助手，通过自然语言操控 PPT，解决排�
 **用户说**：「帮我画个流程图，展示开发流程」
 
 **处理步骤**：
-1. 使用多个形状工具组合创建流程图（当前无专用MCP工具，需通过基础形状操作实现）
+1. 调用 `wps_execute_method` (method: "createFlowChart")
 2. 告知流程图已创建
 
 ## 可用MCP工具
 
-本Skill通过以下MCP工具与WPS Office交互（共112个已注册工具）：
+本Skill通过以下MCP工具与WPS Office交互：
 
-### 幻灯片基础（5个）
-
-| MCP工具 | 功能描述 |
-|---------|---------|
-| `wps_ppt_add_slide` | 添加新幻灯片到演示文稿 |
-| `wps_ppt_beautify` | 一键美化幻灯片，优化排版、配色、字体和间距 |
-| `wps_ppt_unify_font` | 统一演示文稿中所有幻灯片的字体 |
-| `wps_ppt_set_font_color` | 设置字体颜色 |
-| `wps_ppt_align_objects` | 对齐多个对象 |
-
-### 幻灯片操作（22个）
+### 基础工具
 
 | MCP工具 | 功能描述 |
 |---------|---------|
-| `wps_ppt_delete_slide` | 删除指定的幻灯片 |
-| `wps_ppt_duplicate_slide` | 复制指定的幻灯片，在其后插入副本 |
-| `wps_ppt_move_slide` | 移动幻灯片到指定位置 |
-| `wps_ppt_get_slide_count` | 获取演示文稿中的幻灯片总数 |
-| `wps_ppt_get_slide_info` | 获取指定幻灯片的详细信息（布局、元素列表等） |
-| `wps_ppt_switch_slide` | 切换到指定的幻灯片页面 |
-| `wps_ppt_set_slide_layout` | 设置幻灯片的版式布局 |
-| `wps_ppt_set_slide_size` | 设置演示文稿的幻灯片尺寸 |
-| `wps_ppt_get_slide_notes` | 获取指定幻灯片的备注内容 |
-| `wps_ppt_set_slide_notes` | 设置幻灯片的备注内容（用于演讲提示） |
-| `wps_ppt_copy_slide` | 复制幻灯片到指定位置 |
-| `wps_ppt_set_slide_title` | 设置幻灯片的标题文本 |
-| `wps_ppt_get_slide_title` | 获取幻灯片标题文本 |
-| `wps_ppt_set_slide_subtitle` | 设置幻灯片副标题 |
-| `wps_ppt_set_slide_content` | 设置幻灯片内容区文本 |
-| `wps_ppt_set_slide_theme` | 设置演示文稿主题 |
-| `wps_ppt_insert_slide_image` | 在幻灯片中插入图片 |
-| `wps_ppt_add_speaker_notes` | 添加或追加演讲者备注到指定幻灯片 |
-| `wps_ppt_start_slide_show` | 开始幻灯片放映 |
-| `wps_ppt_find_ppt_text` | 在演示文稿中搜索指定文本 |
-| `wps_ppt_replace_ppt_text` | 在演示文稿中查找并替换文本 |
-| `wps_ppt_set_slide_background` | 设置幻灯片背景（支持多种背景类型） |
+| `wps_get_active_presentation` | 获取当前演示文稿信息（名称、路径、幻灯片数量） |
+| `wps_ppt_add_slide` | 添加幻灯片 |
+| `wps_ppt_beautify` | 美化幻灯片 |
+| `wps_ppt_unify_font` | 统一字体 |
 
-### 演示文稿管理（8个）
+### 高级工具（通过 wps_execute_method 调用）
 
-| MCP工具 | 功能描述 |
-|---------|---------|
-| `wps_ppt_create_presentation` | 新建空白演示文稿 |
-| `wps_ppt_open_presentation` | 打开指定路径的演示文稿文件 |
-| `wps_ppt_close_presentation` | 关闭演示文稿（可指定文稿名称） |
-| `wps_ppt_get_open_presentations` | 获取当前所有已打开的演示文稿列表 |
-| `wps_ppt_switch_presentation` | 切换到指定名称的演示文稿 |
-| `wps_ppt_get_slide_master` | 获取当前演示文稿的母版信息 |
-| `wps_ppt_set_master_background` | 设置母版背景样式 |
-| `wps_ppt_add_master_element` | 向母版中添加新元素 |
+使用 `wps_execute_method` 工具，设置 `appType: "wpp"`，调用以下方法：
 
-### 文本框（7个）
+#### 演示文稿管理
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `createPresentation` | 新建演示文稿 | `{}` |
+| `openPresentation` | 打开演示文稿 | `{path: "/path/to/ppt.pptx"}` |
+| `closePresentation` | 关闭演示文稿 | `{}` |
+| `getOpenPresentations` | 获取打开的演示文稿列表 | `{}` |
+| `switchPresentation` | 切换演示文稿 | `{name: "演示文稿.pptx"}` |
 
-| MCP工具 | 功能描述 |
-|---------|---------|
-| `wps_ppt_add_textbox` | 在幻灯片中添加文本框 |
-| `wps_ppt_delete_textbox` | 删除指定文本框 |
-| `wps_ppt_get_textboxes` | 获取幻灯片上所有文本框列表 |
-| `wps_ppt_set_textbox_text` | 设置文本框文本内容 |
-| `wps_ppt_set_textbox_style` | 设置文本框样式 |
-| `wps_ppt_create_3d_text` | 在幻灯片中创建带有3D效果的文字 |
-| `wps_ppt_set_shape_text` | 设置幻灯片中指定形状的文字内容 |
+#### 幻灯片操作
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `addSlide` | 添加幻灯片 | `{layout: "title_content", title: "标题"}` |
+| `deleteSlide` | 删除幻灯片 | `{slideIndex: 1}` |
+| `duplicateSlide` | 复制幻灯片 | `{slideIndex: 1}` |
+| `moveSlide` | 移动幻灯片 | `{from: 1, to: 3}` |
+| `getSlideCount` | 获取幻灯片数量 | `{}` |
+| `getSlideInfo` | 获取幻灯片信息 | `{slideIndex: 1}` |
+| `switchSlide` | 切换到指定幻灯片 | `{slideIndex: 1}` |
+| `setSlideLayout` | 设置幻灯片布局 | `{slideIndex: 1, layout: "blank"}` |
+| `getSlideNotes` | 获取备注 | `{slideIndex: 1}` |
+| `setSlideNotes` | 设置备注 | `{slideIndex: 1, notes: "备注内容"}` |
 
-### 形状基础（10个）
+#### 文本框操作
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `addTextBox` | 添加文本框 | `{text: "内容", left: 100, top: 200}` |
+| `deleteTextBox` | 删除文本框 | `{shapeIndex: 1}` |
+| `getTextBoxes` | 获取所有文本框 | `{slideIndex: 1}` |
+| `setTextBoxText` | 设置文本框内容 | `{shapeIndex: 1, text: "新内容"}` |
+| `setTextBoxStyle` | 设置文本框样式 | `{shapeIndex: 1, fontSize: 24}` |
+| `setSlideTitle` | 设置标题 | `{slideIndex: 1, title: "新标题"}` |
+| `getSlideTitle` | 获取标题 | `{slideIndex: 1}` |
+| `setSlideSubtitle` | 设置副标题 | `{slideIndex: 1, subtitle: "副标题"}` |
+| `setSlideContent` | 设置内容 | `{slideIndex: 1, content: "内容文本"}` |
 
-| MCP工具 | 功能描述 |
-|---------|---------|
-| `wps_ppt_add_shape` | 在幻灯片中添加形状 |
-| `wps_ppt_delete_shape` | 删除幻灯片中指定的形状 |
-| `wps_ppt_get_shapes` | 获取幻灯片中所有形状的列表信息 |
-| `wps_ppt_set_shape_position` | 设置幻灯片中指定形状的位置和大小 |
-| `wps_ppt_set_shape_style` | 设置形状的样式（填充颜色/边框颜色/边框粗细） |
-| `wps_ppt_set_shape_fill` | 设置幻灯片中指定形状的填充颜色 |
-| `wps_ppt_set_shape_border` | 设置幻灯片中指定形状的边框样式 |
-| `wps_ppt_set_shape_shadow` | 设置幻灯片中指定形状的阴影效果 |
-| `wps_ppt_set_shape_gradient` | 设置幻灯片中指定形状的渐变填充效果 |
-| `wps_ppt_set_shape_transparency` | 设置幻灯片中指定形状的透明度 |
+#### 形状操作
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `addShape` | 添加形状 | `{shapeType: 5, left: 100, top: 100, width: 200, height: 100}` |
+| `deleteShape` | 删除形状 | `{shapeIndex: 1}` |
+| `getShapes` | 获取所有形状 | `{slideIndex: 1}` |
+| `setShapeStyle` | 设置形状样式 | `{shapeIndex: 1, fillColor: "#1a365d"}` |
+| `setShapeText` | 设置形状文字 | `{shapeIndex: 1, text: "文字"}` |
+| `setShapePosition` | 设置形状位置 | `{shapeIndex: 1, left: 100, top: 100}` |
+| `setShapeShadow` | 设置阴影 | `{shapeIndex: 1, shadow: true}` |
+| `setShapeGradient` | 设置渐变 | `{shapeIndex: 1, colors: ["#fff", "#000"]}` |
+| `setShapeBorder` | 设置边框 | `{shapeIndex: 1, color: "#000", weight: 2}` |
+| `setShapeTransparency` | 设置透明度 | `{shapeIndex: 1, transparency: 0.5}` |
+| `setShapeRoundness` | 设置圆角 | `{shapeIndex: 1, roundness: 0.2}` |
+| `setShapeFullStyle` | 设置完整样式 | `{shapeIndex: 1, fillColor: "#fff", borderColor: "#000"}` |
 
-### 形状高级（6个）
+#### 智能布局
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `alignShapes` | 对齐形状 | `{shapeIndices: [1,2,3], alignment: "center"}` |
+| `distributeShapes` | 分布形状 | `{shapeIndices: [1,2,3], direction: "horizontal"}` |
+| `groupShapes` | 组合形状 | `{shapeIndices: [1,2,3]}` |
+| `duplicateShape` | 复制形状 | `{shapeIndex: 1}` |
+| `setShapeZOrder` | 设置层级 | `{shapeIndex: 1, order: "front"}` |
+| `addConnector` | 添加连接线 | `{from: 1, to: 2}` |
+| `addArrow` | 添加箭头 | `{from: {x:100,y:100}, to: {x:200,y:200}}` |
+| `autoLayout` | 自动布局 | `{slideIndex: 1}` |
+| `smartDistribute` | 智能分布 | `{slideIndex: 1}` |
+| `createGrid` | 创建网格 | `{rows: 2, cols: 3}` |
 
-| MCP工具 | 功能描述 |
-|---------|---------|
-| `wps_ppt_align_shapes` | 对齐幻灯片中的多个形状 |
-| `wps_ppt_distribute_shapes` | 等距分布幻灯片中的多个形状 |
-| `wps_ppt_group_shapes` | 将幻灯片中的多个形状组合为一个组 |
-| `wps_ppt_duplicate_shape` | 复制幻灯片中的指定形状 |
-| `wps_ppt_set_shape_z_order` | 设置形状在幻灯片中的层级顺序（Z轴排列） |
-| `wps_ppt_smart_distribute` | 将指定形状进行等距分布排列 |
+#### 图片操作
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `insertPptImage` | 插入图片 | `{path: "/path/to/image.png", left: 100, top: 100}` |
+| `deletePptImage` | 删除图片 | `{shapeIndex: 1}` |
+| `setImageStyle` | 设置图片样式 | `{shapeIndex: 1, shadow: true}` |
 
-### 图片（5个）
+#### 表格操作
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `insertPptTable` | 插入表格 | `{rows: 3, cols: 4, left: 100, top: 100}` |
+| `setPptTableCell` | 设置单元格 | `{tableIndex: 1, row: 1, col: 1, text: "内容"}` |
+| `getPptTableCell` | 获取单元格 | `{tableIndex: 1, row: 1, col: 1}` |
+| `setPptTableStyle` | 设置表格样式 | `{tableIndex: 1, style: "medium"}` |
+| `setPptTableCellStyle` | 设置单元格样式 | `{tableIndex: 1, row: 1, col: 1, fillColor: "#fff"}` |
+| `setPptTableRowStyle` | 设置行样式 | `{tableIndex: 1, row: 1, height: 30}` |
 
-| MCP工具 | 功能描述 |
-|---------|---------|
-| `wps_ppt_insert_image` | 在幻灯片中插入图片 |
-| `wps_ppt_insert_ppt_image` | 插入图片到幻灯片中 |
-| `wps_ppt_delete_ppt_image` | 删除幻灯片中指定的图片 |
-| `wps_ppt_set_image_style` | 设置幻灯片中指定图片的样式 |
-| `wps_ppt_export_slide_as_image` | 将指定幻灯片导出为 PNG/JPG/GIF/BMP 位图（1:1 原生还原，替代 pdf2image 中转） |
+#### 图表操作
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `insertPptChart` | 插入图表 | `{chartType: "column", data: [[1,2,3]]}` |
+| `setPptChartData` | 设置图表数据 | `{chartIndex: 1, data: [[1,2,3]]}` |
+| `setPptChartStyle` | 设置图表样式 | `{chartIndex: 1, style: 1}` |
 
-> 导出示例：`wps_ppt_export_slide_as_image({ slideIndex: 1, outputPath: "/Users/me/Downloads/cover.png", format: "PNG", width: 1920, height: 1080 })` — 适用于"把第N页导成高清图""按页拆解 PPT 为图片"等场景。
+#### 数据可视化
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `createKpiCards` | 创建KPI卡片 | `{cards: [{title:"营收",value:"100亿"}]}` |
+| `createStyledTable` | 创建样式表格 | `{data: [["A","B"],["1","2"]]}` |
+| `createProgressBar` | 创建进度条 | `{value: 75, max: 100}` |
+| `createGauge` | 创建仪表盘 | `{value: 80, max: 100}` |
+| `createMiniCharts` | 创建迷你图表 | `{data: [1,2,3,4,5]}` |
+| `createDonutChart` | 创建环形图 | `{data: [{name:"A",value:30},{name:"B",value:70}]}` |
 
-### 表格（6个）
+#### 流程图与图示
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `createFlowChart` | 创建流程图 | `{steps: ["开始","步骤1","结束"]}` |
+| `createOrgChart` | 创建组织架构图 | `{nodes: [{name:"CEO",level:0}]}` |
+| `createTimeline` | 创建时间轴 | `{events: [{date:"2024",title:"里程碑"}]}` |
 
-| MCP工具 | 功能描述 |
-|---------|---------|
-| `wps_ppt_insert_table` | 在幻灯片中插入表格 |
-| `wps_ppt_get_table_cell` | 获取表格单元格内容 |
-| `wps_ppt_set_table_cell` | 设置表格单元格内容 |
-| `wps_ppt_set_table_style` | 设置表格整体样式 |
-| `wps_ppt_set_table_cell_style` | 设置表格单元格样式 |
-| `wps_ppt_set_table_row_style` | 设置表格行样式 |
+#### 美化功能
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `beautifySlide` | 美化幻灯片 | `{slideIndex: 1, style: "business"}` |
+| `autoBeautifySlide` | 自动美化 | `{slideIndex: 1}` |
+| `beautifyAllSlides` | 美化所有幻灯片 | `{style: "business"}` |
+| `applyColorScheme` | 应用配色方案 | `{scheme: "business"}` |
+| `unifyFont` | 统一字体 | `{fontName: "微软雅黑"}` |
+| `addTitleDecoration` | 添加标题装饰 | `{slideIndex: 1, style: "underline"}` |
+| `addPageIndicator` | 添加页码指示 | `{style: "dots"}` |
 
-### 美化高级（7个）
+#### 动画效果
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `addAnimation` | 添加动画 | `{shapeIndex: 1, effectType: 10}` |
+| `addAnimationPreset` | 添加预设动画 | `{shapeIndex: 1, preset: "fadeIn"}` |
+| `addEmphasisAnimation` | 添加强调动画 | `{shapeIndex: 1, type: "pulse"}` |
+| `removeAnimation` | 移除动画 | `{shapeIndex: 1}` |
+| `getAnimations` | 获取动画列表 | `{slideIndex: 1}` |
+| `setAnimationOrder` | 设置动画顺序 | `{slideIndex: 1, order: [1,2,3]}` |
 
-| MCP工具 | 功能描述 |
-|---------|---------|
-| `wps_ppt_apply_color_scheme` | 为幻灯片应用统一配色方案 |
-| `wps_ppt_auto_beautify_slide` | 自动美化指定的单页幻灯片 |
-| `wps_ppt_beautify_all_slides` | 批量美化演示文稿中的所有幻灯片 |
-| `wps_ppt_add_title_decoration` | 为幻灯片标题添加装饰性元素 |
-| `wps_ppt_add_page_indicator` | 为演示文稿添加页码指示器 |
-| `wps_ppt_create_styled_table` | 在幻灯片中创建带预设样式的精美表格 |
-| `wps_ppt_create_kpi_cards` | 在幻灯片上创建KPI指标卡片 |
+#### 切换效果
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `setSlideTransition` | 设置切换效果 | `{slideIndex: 1, effect: "fade"}` |
+| `removeSlideTransition` | 移除切换效果 | `{slideIndex: 1}` |
+| `applyTransitionToAll` | 应用到所有 | `{effect: "fade"}` |
 
-### 动画切换（9个）
+#### 背景设置
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `setSlideBackground` | 设置背景 | `{slideIndex: 1, color: "#1a365d"}` |
+| `setBackgroundColor` | 设置背景颜色 | `{slideIndex: 1, color: "#ffffff"}` |
+| `setBackgroundImage` | 设置背景图片 | `{slideIndex: 1, path: "/path/to/bg.jpg"}` |
+| `setBackgroundGradient` | 设置渐变背景 | `{slideIndex: 1, colors: ["#fff","#000"]}` |
 
-| MCP工具 | 功能描述 |
-|---------|---------|
-| `wps_ppt_add_animation` | 为幻灯片中的形状添加动画效果 |
-| `wps_ppt_remove_animation` | 移除幻灯片中指定的动画效果 |
-| `wps_ppt_get_animations` | 获取幻灯片上所有动画效果的列表 |
-| `wps_ppt_set_animation_order` | 调整动画在时间线上的播放顺序 |
-| `wps_ppt_add_animation_preset` | 为形状添加预设入场动画效果 |
-| `wps_ppt_add_emphasis_animation` | 为形状添加强调动画效果 |
-| `wps_ppt_set_slide_transition` | 设置幻灯片的页面切换效果 |
-| `wps_ppt_remove_slide_transition` | 移除幻灯片的切换效果 |
-| `wps_ppt_apply_transition_to_all` | 为所有幻灯片应用统一的切换效果 |
+#### 超链接
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `addPptHyperlink` | 添加超链接 | `{shapeIndex: 1, url: "https://example.com"}` |
+| `removePptHyperlink` | 移除超链接 | `{shapeIndex: 1}` |
 
-### 图表流程图（5个）
+#### 页脚与页码
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `setSlideNumber` | 设置页码 | `{show: true, startFrom: 1}` |
+| `setPptFooter` | 设置页脚 | `{text: "页脚内容"}` |
+| `setPptDateTime` | 设置日期时间 | `{show: true, format: "auto"}` |
 
-| MCP工具 | 功能描述 |
-|---------|---------|
-| `wps_ppt_insert_ppt_chart` | 在幻灯片中插入数据图表 |
-| `wps_ppt_set_ppt_chart_data` | 更新幻灯片中已有图表的数据 |
-| `wps_ppt_set_ppt_chart_style` | 设置幻灯片中图表的样式属性 |
-| `wps_ppt_create_flow_chart` | 在幻灯片中创建流程图 |
-| `wps_ppt_create_org_chart` | 在幻灯片中创建组织架构图 |
+#### 查找替换
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `findPptText` | 查找文本 | `{text: "关键词"}` |
+| `replacePptText` | 替换文本 | `{find: "旧", replace: "新"}` |
 
-### 杂项工具（9个）
+#### 母版操作
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `getSlideMaster` | 获取母版信息 | `{}` |
+| `setMasterBackground` | 设置母版背景 | `{color: "#ffffff"}` |
+| `addMasterElement` | 添加母版元素 | `{type: "logo", path: "/path/to/logo.png"}` |
 
-| MCP工具 | 功能描述 |
-|---------|---------|
-| `wps_ppt_add_chart` | 在幻灯片中插入图表 |
-| `wps_ppt_set_animation` | 设置幻灯片中指定元素的动画效果 |
-| `wps_ppt_set_background` | 设置幻灯片的背景颜色或背景图片 |
-| `wps_ppt_set_transition` | 设置幻灯片切换效果 |
-| `wps_ppt_add_ppt_hyperlink` | 为幻灯片中的形状添加超链接 |
-| `wps_ppt_remove_ppt_hyperlink` | 移除幻灯片中形状的超链接 |
-| `wps_ppt_auto_layout` | 自动调整幻灯片中所有元素的布局 |
-| `wps_ppt_create_grid` | 在幻灯片中创建网格布局 |
-| `wps_ppt_create_timeline` | 在幻灯片中创建时间线 |
+#### 3D效果
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `set3DRotation` | 3D旋转效果 | `{shapeIndex: 1, preset: "perspective"}` |
+| `set3DDepth` | 3D深度效果 | `{shapeIndex: 1, depth: 50}` |
+| `set3DMaterial` | 3D材质效果 | `{shapeIndex: 1, material: "metal"}` |
+| `create3DText` | 创建3D文字 | `{text: "3D文字", preset: "default"}` |
 
-### 数据可视化（6个）
-
-| MCP工具 | 功能描述 |
-|---------|---------|
-| `wps_ppt_create_progress_bar` | 在幻灯片中创建进度条 |
-| `wps_ppt_create_gauge` | 在幻灯片中创建仪表盘图表 |
-| `wps_ppt_create_mini_charts` | 在幻灯片中创建迷你图表 |
-| `wps_ppt_create_donut_chart` | 在幻灯片中创建环形图 |
-| `wps_ppt_set_background_gradient` | 为幻灯片设置渐变色背景 |
-| `wps_ppt_set_background_image` | 设置幻灯片背景为指定图片 |
-
-### 背景页脚3D（7个）
-
-| MCP工具 | 功能描述 |
-|---------|---------|
-| `wps_ppt_set_background_color` | 设置幻灯片背景为指定颜色 |
-| `wps_ppt_set_slide_number` | 设置幻灯片页码的显示状态和起始编号 |
-| `wps_ppt_set_ppt_footer` | 设置演示文稿页脚文本 |
-| `wps_ppt_set_ppt_date_time` | 设置演示文稿日期时间显示 |
-| `wps_ppt_set_3d_rotation` | 设置幻灯片中形状的3D旋转效果 |
-| `wps_ppt_set_3d_depth` | 设置幻灯片中形状的3D挤出深度 |
-| `wps_ppt_set_3d_material` | 设置幻灯片中形状的3D材质效果 |
+#### 演示放映
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `startSlideShow` | 开始放映 | `{fromSlide: 1}` |
+| `endSlideShow` | 结束放映 | `{}` |
 
 ### 调用示例
 
 ```javascript
 // 添加幻灯片
-wps_ppt_add_slide({ layout: "title_content", title: "项目进度", position: 3 })
+wps_execute_method({
+  appType: "wpp",
+  method: "addSlide",
+  params: { layout: "title_content", title: "项目进度" }
+})
 
 // 美化幻灯片
-wps_ppt_beautify({ slide_index: 1, color_scheme: "business", font: "微软雅黑" })
+wps_execute_method({
+  appType: "wpp",
+  method: "beautifySlide",
+  params: { slideIndex: 1, style: "business" }
+})
 
-// 添加文本框
-wps_ppt_add_textbox({ slideIndex: 1, text: "关键指标", x: 100, y: 200, width: 300, height: 50 })
+// 创建流程图
+wps_execute_method({
+  appType: "wpp",
+  method: "createFlowChart",
+  params: { steps: ["需求分析", "设计", "开发", "测试", "上线"] }
+})
 
-// 添加形状
-wps_ppt_add_shape({ slideIndex: 1, shapeType: "rectangle", x: 50, y: 100, width: 200, height: 150 })
+// 添加KPI卡片
+wps_execute_method({
+  appType: "wpp",
+  method: "createKpiCards",
+  params: { cards: [
+    {title: "营收", value: "100亿", trend: "up"},
+    {title: "用户", value: "500万", trend: "up"}
+  ]}
+})
 
-// 设置动画
-wps_ppt_set_animation({ slideIndex: 1, shapeName: "Title", animationType: "fade" })
-
-// 设置切换效果
-wps_ppt_set_transition({ slideIndex: 1, transitionType: "push", duration: 1.5 })
-
-// 设置背景
-wps_ppt_set_background({ slideIndex: 1, color: "#1A1A2E" })
-
-// 插入图片
-wps_ppt_insert_image({ slideIndex: 1, imagePath: "/path/to/image.png", x: 100, y: 100 })
+// 设置3D效果
+wps_execute_method({
+  appType: "wpp",
+  method: "set3DRotation",
+  params: { shapeIndex: 1, preset: "perspective" }
+})
 ```
-
 
 ## 幻灯片布局类型
 
@@ -469,5 +494,3 @@ wps_ppt_insert_image({ slideIndex: 1, imagePath: "/path/to/image.png", x: 100, y
 ---
 
 *Skill by lc2panda - WPS MCP Project*
-
-<!-- 审计记录：2026-03-21 T18 同步工具列表 42→111个MCP工具（全量14类分组），与代码100%同步 -->
