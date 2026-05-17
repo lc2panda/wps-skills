@@ -1,6 +1,6 @@
 ---
 name: wps-word
-description: WPS 文字智能助手，通过自然语言操控 Word 文档，解决排版、格式、内容编辑等痛点问题
+description: "WPS 文字智能助手，通过自然语言操控 Word 文档，解决排版、格式、内容编辑、模板填写等痛点问题。适用于：文档排版、格式设置、目录生成、表格插入、样式管理、模板填写。当用户提及 Word、文档、WPS 文字、排版、目录、样式、填写、模板、表单时使用此 skill。"
 ---
 
 # WPS 文字智能助手
@@ -20,8 +20,10 @@ description: WPS 文字智能助手，通过自然语言操控 Word 文档，解
 
 - **文本插入**：在指定位置插入文本
 - **查找替换**：批量查找和替换内容
+- **模板填写**：智能填写模板字段（下划线/冒号后/标签后/占位符）
 - **表格操作**：插入表格、设置表格样式
 - **图片处理**：插入图片、调整大小和位置
+- **书签操作**：获取书签、替换书签内容
 
 ### 3. 文档结构
 
@@ -46,14 +48,16 @@ description: WPS 文字智能助手，通过自然语言操控 Word 文档，解
 - 「格式」「排版」「美化」→ 格式设置
 - 「目录」「大纲」→ 文档结构
 - 「替换」「改成」→ 查找替换
+- 「填写」「模板」「表单」「填入」→ 模板填写
 - 「表格」「插入」→ 内容操作
 
 ### Step 2: 获取上下文
 
-调用 `wps_word_get_open_documents` 查看已打开文档列表，调用 `wps_word_get_document_text` 获取当前文档内容：
-- 已打开的文档名称和路径
-- 当前活动文档
-- 文档文本内容（可指定范围）
+调用 `wps_get_active_document` 了解当前文档结构：
+- 文档名称和路径
+- 段落数量和字数
+- 文档结构（标题层级）
+- 当前选中内容
 
 ### Step 3: 生成方案
 
@@ -64,39 +68,13 @@ description: WPS 文字智能助手，通过自然语言操控 Word 文档，解
 
 ### Step 4: 执行操作
 
-调用相应MCP工具完成操作（共24个已注册工具）：
-
-**文档管理：**
-- `wps_word_get_open_documents`：获取打开的文档列表
-- `wps_word_switch_document`：切换文档（name）
-- `wps_word_open_document`：打开文档（filePath）
-- `wps_word_get_document_text`：获取文档文本（start, end）
-- `wps_word_get_active_document`：获取当前活动文档信息
-
-**内容操作：**
-- `wps_word_insert_text`：插入文本（text, position, style, new_paragraph）
-- `wps_word_find_replace`：查找替换（find_text, replace_text, replace_all, match_case, match_whole_word）
-- `wps_word_insert_table`：插入表格（rows, cols）
-- `wps_word_insert_image`：插入图片（imagePath, width, height）
-- `wps_word_insert_comment`：插入批注（text）
-- `wps_word_insert_page_break`：插入分页符
-- `wps_word_insert_bookmark`：插入书签（name）
-
-**格式设置：**
-- `wps_word_set_font`：设置字体格式（font_name, font_size, bold, italic, underline, color, range）
-- `wps_word_apply_style`：应用样式（style_name, range）
-- `wps_word_set_paragraph`：设置段落格式（alignment, lineSpacing）
-- `wps_word_set_font_style`：设置字体样式（bold, italic, underline等快捷设置）
-- `wps_word_set_text_color`：设置文字颜色（color）
-- `wps_word_set_line_spacing`：设置行距（lineSpacing, paragraphIndex）
-- `wps_word_generate_toc`：生成目录（position, levels, include_page_numbers）
-
-**页面布局：**
-- `wps_word_set_page_setup`：设置页面布局（orientation, marginTop/Bottom/Left/Right）
-- `wps_word_insert_header`：设置页眉（text, section）
-- `wps_word_insert_footer`：设置页脚（text, section）
-- `wps_word_generate_doc_toc`：生成文档目录（基于文档结构自动生成）
-- `wps_word_insert_section_break`：插入分节符（breakType）
+调用相应MCP工具完成操作（通过 `wps_execute_method`，appType设为"wps"）：
+- `setFont`：设置字体格式
+- `applyStyle`：应用样式
+- `findReplace`：查找替换
+- `insertText`：插入文本
+- `generateTOC`：生成目录
+- `insertTable`：插入表格
 
 ### Step 5: 反馈结果
 
@@ -113,10 +91,10 @@ description: WPS 文字智能助手，通过自然语言操控 Word 文档，解
 **用户说**：「把全文字体统一成宋体，字号12号」
 
 **处理步骤**：
-1. 调用 `wps_word_get_open_documents` 了解文档情况
-2. 调用 `wps_word_set_font` 设置全文字体：
-   - font_name: "宋体"
-   - font_size: 12
+1. 调用 `wps_get_active_document` 了解文档情况
+2. 调用 `wps_execute_method` (method: "setFont") 设置全文字体：
+   - fontName: "宋体"
+   - fontSize: 12
    - range: "all"
 3. 告知用户已完成，共影响 X 个字符
 
@@ -127,7 +105,7 @@ description: WPS 文字智能助手，通过自然语言操控 Word 文档，解
 **处理步骤**：
 1. 获取上下文，检查文档是否有标题样式
 2. 如果没有标题样式，提醒用户先设置
-3. 调用 `wps_word_generate_toc` 生成目录：
+3. 调用 `wps_execute_method` (method: "generateTOC") 生成目录：
    - position: "start"（在文档开头）
    - levels: 3（显示3级标题）
 4. 告知用户目录已生成，可以通过 Ctrl+点击跳转
@@ -137,10 +115,10 @@ description: WPS 文字智能助手，通过自然语言操控 Word 文档，解
 **用户说**：「把文档里所有的"公司"改成"集团"」
 
 **处理步骤**：
-1. 调用 `wps_word_find_replace`：
-   - find_text: "公司"
-   - replace_text: "集团"
-   - replace_all: true
+1. 调用 `wps_execute_method` (method: "findReplace")：
+   - findText: "公司"
+   - replaceText: "集团"
+   - replaceAll: true
 2. 报告替换结果：已替换 X 处
 
 ### 场景4: 插入表格
@@ -148,7 +126,7 @@ description: WPS 文字智能助手，通过自然语言操控 Word 文档，解
 **用户说**：「插入一个3行4列的表格」
 
 **处理步骤**：
-1. 调用 `wps_word_insert_table`：
+1. 调用 `wps_execute_method` (method: "insertTable")：
    - rows: 3
    - cols: 4
 2. 可选：询问是否需要填充表头
@@ -160,8 +138,8 @@ description: WPS 文字智能助手，通过自然语言操控 Word 文档，解
 
 **处理步骤**：
 1. 确认当前选中的内容
-2. 调用 `wps_word_apply_style`：
-   - style_name: "标题 1"
+2. 调用 `wps_execute_method` (method: "applyStyle")：
+   - styleName: "标题 1"
 3. 告知样式已应用
 
 ### 场景6: 文档美化
@@ -177,6 +155,28 @@ description: WPS 文字智能助手，通过自然语言操控 Word 文档，解
    - 段落首行缩进
 3. 询问用户确认后执行
 4. 报告美化结果
+
+### 场景7: 模板填写
+
+**用户说**：「帮我填写项目名称为"XX信息化项目"」
+
+**处理步骤**：
+1. 调用 `wps_word_get_paragraphs` 了解文档结构，确认有哪些可填写位置
+2. 调用 `wps_word_find_in_document` 定位关键字"项目名称"
+3. 调用 `wps_word_smart_fill_field` 智能填写：
+   - keyword: "项目名称"
+   - value: "XX信息化项目"
+   - fillMode: "auto"（自动判断填写模式）
+4. 验证填写结果，告知用户
+
+**填写模式说明**：
+- `auto`（默认）：自动判断填写模式，推荐优先使用
+- `underline`：关键字后有下划线`___`，替换下划线部分为填写内容
+- `afterColon`：关键字后有`：`或`:`，在冒号后插入
+- `afterLabel`：关键字是标签，直接在关键字后插入
+- `placeholder`：关键字被`{}`/`【】`包裹，替换整个占位符
+
+**重要提示**：模板填写场景必须使用 `smartFillField`，不要使用 `findReplace`。`findReplace` 会删除关键字本身并可能破坏格式（丢失下划线、加粗等）。
 
 ## 文档排版规范
 
@@ -241,6 +241,13 @@ description: WPS 文字智能助手，通过自然语言操控 Word 文档，解
 2. **保留原格式**：询问是否需要保留特殊格式
 3. **操作可逆**：提醒用户可以撤销（Ctrl+Z）
 
+### 模板填写原则
+
+1. **优先使用 smartFillField**：模板填写场景应使用 `wps_word_smart_fill_field`，而非 `findReplace`。findReplace 会删除关键字本身并可能破坏格式（如丢失下划线、加粗等）
+2. **先读取后填写**：填写前先用 `wps_word_get_paragraphs` 了解文档结构，确认关键字位置
+3. **精确指定模式**：如果 auto 模式判断不准确，可以手动指定 fillMode（underline/afterColon/afterLabel/placeholder）
+4. **书签模板**：如果模板使用书签标记填写位置，使用 `wps_word_replace_bookmark_content`
+
 ### 沟通原则
 
 1. **理解意图**：不确定时先询问具体需求
@@ -256,127 +263,114 @@ description: WPS 文字智能助手，通过自然语言操控 Word 文档，解
 
 ## 可用MCP工具
 
-本Skill通过以下MCP工具与WPS Office交互（共24个已注册工具）：
+本Skill通过以下MCP工具与WPS Office交互：
 
-### 格式化工具（5个）
+### 基础工具
 
-| MCP工具名称 | 功能描述 |
-|------------|---------|
-| `wps_word_set_font` | 设置字体格式（字体名称、字号、加粗、斜体、颜色等） |
-| `wps_word_apply_style` | 应用Word样式到当前选中区域或指定范围 |
-| `wps_word_set_font_style` | 设置选中文字的字体样式属性 |
-| `wps_word_set_text_color` | 设置Word文档中选中文字的颜色 |
-| `wps_word_set_line_spacing` | 设置段落行距 |
+| MCP工具 | 功能描述 |
+|---------|---------|
+| `wps_get_active_document` | 获取当前文档信息（名称、路径、段落数、字数） |
+| `wps_insert_text` | 在指定位置插入文本 |
 
-### 内容工具（10个）
+### 模板填写专用工具
 
-| MCP工具名称 | 功能描述 |
-|------------|---------|
-| `wps_word_insert_text` | 在Word文档中插入文本 |
-| `wps_word_find_replace` | 在Word文档中查找并替换文本 |
-| `wps_word_insert_table` | 在Word文档光标位置插入表格 |
-| `wps_word_insert_image` | 在Word文档中插入图片 |
-| `wps_word_insert_comment` | 在Word文档选中内容处插入批注 |
-| `wps_word_insert_page_break` | 在文档光标位置插入分页符 |
-| `wps_word_insert_bookmark` | 在当前光标位置或选中区域插入书签 |
-| `wps_word_insert_section_break` | 插入分节符（用于将文档分为不同的节） |
-| `wps_word_set_paragraph` | 设置当前段落格式（对齐方式、行间距等） |
-| `wps_word_set_page_setup` | 设置文档页面布局（页面方向和边距） |
+| MCP工具 | 功能描述 |
+|---------|---------|
+| `wps_word_get_paragraphs` | 获取文档段落结构（文本、样式、位置） |
+| `wps_word_find_in_document` | 查找文本返回位置信息（不替换） |
+| `wps_word_smart_fill_field` | 智能填写模板字段（自动判断填写模式） |
+| `wps_word_replace_bookmark_content` | 替换书签内容 |
 
-### 文档管理工具（9个）
+### 高级工具（通过 wps_execute_method 调用）
 
-| MCP工具名称 | 功能描述 |
-|------------|---------|
-| `wps_word_get_active_document` | 获取当前WPS Writer活动文档的基本信息 |
-| `wps_word_get_open_documents` | 获取当前WPS Writer中所有已打开的文档列表 |
-| `wps_word_switch_document` | 切换到指定名称的文档 |
-| `wps_word_open_document` | 打开指定路径的Word文档 |
-| `wps_word_get_document_text` | 获取当前Word文档的文本内容 |
-| `wps_word_insert_header` | 设置页眉内容 |
-| `wps_word_insert_footer` | 设置页脚内容 |
-| `wps_word_generate_toc` | 根据文档中的标题样式自动生成目录 |
-| `wps_word_generate_doc_toc` | 自动生成文档目录（根据文档结构自动生成） |
+使用 `wps_execute_method` 工具，设置 `appType: "wps"`，调用以下方法：
+
+#### 文档管理
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `getOpenDocuments` | 获取打开的文档列表 | `{}` |
+| `switchDocument` | 切换文档 | `{name: "文档名.docx"}` |
+| `openDocument` | 打开文档 | `{path: "/path/to/doc.docx"}` |
+| `getDocumentText` | 获取文档全文 | `{}` |
+
+#### 文本操作
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `insertText` | 插入文本 | `{text: "内容", position: "end"}` |
+| `insertText`(bookmark) | 在书签位置插入 | `{text: "内容", position: "bookmark:书签名"}` |
+| `insertText`(paragraph) | 在段落后插入 | `{text: "内容", position: "afterParagraph:3"}` |
+| `findReplace` | 查找替换 | `{findText: "旧", replaceText: "新", replaceAll: true}` |
+| `getDocumentParagraphs` | 获取段落结构 | `{startParagraph: 1, endParagraph: 50}` |
+| `findInDocument` | 查找返回位置 | `{findText: "关键字", maxResults: 20}` |
+| `smartFillField` | 智能填写字段 | `{keyword: "项目名称", value: "XX项目", fillMode: "auto"}` |
+| `replaceBookmarkContent` | 替换书签内容 | `{name: "书签名", text: "新内容"}` |
+
+#### 格式设置
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `setFont` | 设置字体 | `{fontName: "微软雅黑", fontSize: 12, bold: true}` |
+| `applyStyle` | 应用样式 | `{styleName: "标题 1"}` |
+| `setParagraph` | 设置段落 | `{alignment: 1, lineSpacing: 1.5}` |
+
+#### 文档结构
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `generateTOC` | 生成目录 | `{levels: 3}` |
+| `insertPageBreak` | 插入分页符 | `{}` |
+| `insertHeader` | 设置页眉 | `{text: "页眉内容"}` |
+| `insertFooter` | 设置页脚 | `{text: "页脚内容"}` |
+
+#### 页面设置
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `setPageSetup` | 页面设置 | `{marginTop: 72, marginBottom: 72}` |
+
+#### 插入内容
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `insertTable` | 插入表格 | `{rows: 5, cols: 4}` |
+| `insertImage` | 插入图片 | `{imagePath: "/path/to/image.png"}` |
+| `insertHyperlink` | 插入超链接 | `{text: "链接文字", url: "https://example.com"}` |
+| `insertBookmark` | 插入书签 | `{name: "书签名"}` |
+
+#### 书签与批注
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `getBookmarks` | 获取书签列表 | `{}` |
+| `insertBookmark` | 插入书签 | `{name: "书签名"}` |
+| `replaceBookmarkContent` | 替换书签内容 | `{name: "书签名", text: "新内容"}` |
+| `addComment` | 添加批注 | `{text: "批注内容"}` |
+| `getComments` | 获取批注列表 | `{}` |
+
+#### 文档信息
+| method | 功能 | params示例 |
+|--------|------|-----------|
+| `getDocumentStats` | 获取文档统计 | `{}` |
 
 ### 调用示例
 
 ```javascript
 // 设置字体
-wps_word_set_font({
-  font_name: "微软雅黑",
-  font_size: 14,
-  bold: true,
-  range: "all"
+wps_execute_method({
+  appType: "wps",
+  method: "setFont",
+  params: { fontName: "微软雅黑", fontSize: 14, bold: true }
 })
 
 // 查找替换
-wps_word_find_replace({
-  find_text: "公司",
-  replace_text: "集团",
-  replace_all: true
+wps_execute_method({
+  appType: "wps",
+  method: "findReplace",
+  params: { findText: "公司", replaceText: "集团", replaceAll: true }
 })
 
-// 应用标题样式
-wps_word_apply_style({
-  style_name: "标题 1"
-})
-
-// 获取文档内容
-wps_word_get_document_text({
-  start: 0,
-  end: 500
-})
-
-// 插入文本到文档末尾
-wps_word_insert_text({
-  text: "附录A：参考资料",
-  position: "end",
-  style: "标题 1",
-  new_paragraph: true
-})
-
-// 生成目录
-wps_word_generate_toc({
-  position: "start",
-  levels: 3,
-  include_page_numbers: true
-})
-
-// 插入表格
-wps_word_insert_table({
-  rows: 3,
-  cols: 4
-})
-
-// 插入图片
-wps_word_insert_image({
-  imagePath: "/path/to/image.png",
-  width: 400,
-  height: 300
-})
-
-// 设置页面为横向
-wps_word_set_page_setup({
-  orientation: "landscape",
-  marginTop: 72,
-  marginBottom: 72
-})
-
-// 插入批注
-wps_word_insert_comment({
-  text: "请核实此数据"
-})
-
-// 设置行距
-wps_word_set_line_spacing({
-  lineSpacing: 1.5
-})
-
-// 设置页眉
-wps_word_insert_header({
-  text: "公司内部文件"
+// 插入页眉
+wps_execute_method({
+  appType: "wps",
+  method: "insertHeader",
+  params: { text: "公司机密文档" }
 })
 ```
-
 
 ## 快捷操作提示
 
@@ -392,5 +386,3 @@ wps_word_insert_header({
 ---
 
 *Skill by lc2panda - WPS MCP Project*
-
-<!-- 审计记录：2026-03-21 T18 同步工具列表 24个MCP工具，按功能重新分组（格式化5+内容10+文档管理9），与代码100%同步 -->
