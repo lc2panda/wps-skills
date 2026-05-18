@@ -225,7 +225,7 @@ export const convertToPdfHandler: ToolHandler = async (
  * 支持docx<->doc, xlsx<->xls, pptx<->ppt等多种格式转换
  */
 export const convertFormatDefinition: ToolDefinition = {
-  name: 'wps_convert_format',
+  name: 'wps_common_convert_format',
   description: `将当前文档转换为其他格式。
 
 使用场景：

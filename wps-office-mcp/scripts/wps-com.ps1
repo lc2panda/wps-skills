@@ -2021,10 +2021,14 @@ switch ($Action) {
         $doc = $word.ActiveDocument
         if ($null -eq $doc) { Output-Json @{ success = $false; error = "No active document" }; exit }
         $ps = $doc.PageSetup
-        if ($null -ne $p.topMargin) { $ps.TopMargin = [double]$p.topMargin * 28.35 }
-        if ($null -ne $p.bottomMargin) { $ps.BottomMargin = [double]$p.bottomMargin * 28.35 }
-        if ($null -ne $p.leftMargin) { $ps.LeftMargin = [double]$p.leftMargin * 28.35 }
-        if ($null -ne $p.rightMargin) { $ps.RightMargin = [double]$p.rightMargin * 28.35 }
+        $marginTop = if ($null -ne $p.marginTop) { $p.marginTop } else { $p.topMargin }
+        $marginBottom = if ($null -ne $p.marginBottom) { $p.marginBottom } else { $p.bottomMargin }
+        $marginLeft = if ($null -ne $p.marginLeft) { $p.marginLeft } else { $p.leftMargin }
+        $marginRight = if ($null -ne $p.marginRight) { $p.marginRight } else { $p.rightMargin }
+        if ($null -ne $marginTop) { $ps.TopMargin = [double]$marginTop * 28.35 }
+        if ($null -ne $marginBottom) { $ps.BottomMargin = [double]$marginBottom * 28.35 }
+        if ($null -ne $marginLeft) { $ps.LeftMargin = [double]$marginLeft * 28.35 }
+        if ($null -ne $marginRight) { $ps.RightMargin = [double]$marginRight * 28.35 }
         if ($null -ne $p.orientation) {
             $ps.Orientation = if ($p.orientation -eq "landscape") { 1 } else { 0 }
         }
@@ -2187,7 +2191,7 @@ switch ($Action) {
         $doc = $word.ActiveDocument
         if ($null -eq $doc) { Output-Json @{ success = $false; error = "No active document" }; exit }
         if (-not $p.keyword) { Output-Json @{ success = $false; error = "keyword required" }; exit }
-        if (-not $p.value) { Output-Json @{ success = $false; error = "value required" }; exit }
+        if ($null -eq $p.value) { Output-Json @{ success = $false; error = "value required（空字符串将清除该字段内容）" }; exit }
         $fillMode = if ($p.fillMode) { $p.fillMode.ToLower() } else { "auto" }
 
         # Step 1: Find the keyword
@@ -3246,8 +3250,10 @@ switch ($Action) {
         $pres = $ppt.ActivePresentation
         $slideIndex = if ($p.slideIndex) { $p.slideIndex } else { 1 }
         $slide = $pres.Slides.Item($slideIndex)
-        $shape = $slide.Shapes.Item($p.shapeName)
-        $slide.TimeLine.MainSequence.AddEffect($shape, $p.effect, 1)
+        $shapeIndex = if ($null -ne $p.shapeIndex) { $p.shapeIndex } else { $p.shapeName }
+        $shape = $slide.Shapes.Item($shapeIndex)
+        $effect = if ($p.effect) { $p.effect } else { 0 }
+        $slide.TimeLine.MainSequence.AddEffect($shape, $effect, 1)
         Output-Json @{ success = $true }
     }
 
@@ -3258,7 +3264,12 @@ switch ($Action) {
         $slideIndex = if ($p.slideIndex) { $p.slideIndex } else { 1 }
         $slide = $pres.Slides.Item($slideIndex)
         $slide.SlideShowTransition.EntryEffect = $p.effect
-        Output-Json @{ success = $true; data = @{ slideIndex = $slideIndex; effect = $p.effect } }
+        $advanceAfter = if ($null -ne $p.advanceAfter) { $p.advanceAfter } else { $p.duration }
+        if ($null -ne $advanceAfter) { $slide.SlideShowTransition.AdvanceTime = [double]$advanceAfter }
+        if ($p.sound) {
+            try { $slide.SlideShowTransition.SoundEffect.ImportFromFile($p.sound) } catch {}
+        }
+        Output-Json @{ success = $true; data = @{ slideIndex = $slideIndex; effect = $p.effect; advanceAfter = $advanceAfter; sound = $p.sound } }
     }
 
     "setSlideBackground" {
@@ -3267,13 +3278,27 @@ switch ($Action) {
         $pres = $ppt.ActivePresentation
         $slideIndex = if ($p.slideIndex) { $p.slideIndex } else { 1 }
         $slide = $pres.Slides.Item($slideIndex)
-        if ($p.color) {
-            $colorValue = Convert-HexColorToRgbInt([string]$p.color)
-            if ($null -ne $colorValue) { $slide.Background.Fill.ForeColor.RGB = $colorValue }
-        }
-        if ($p.imagePath) {
-            $slide.FollowMasterBackground = $false
-            $slide.Background.Fill.UserPicture($p.imagePath)
+        if ($p.background) {
+            $bg = $p.background
+            $color = if ($bg.color) { $bg.color } else { $p.color }
+            $imagePath = if ($bg.imagePath) { $bg.imagePath } else { $p.imagePath }
+            if ($color) {
+                $colorValue = Convert-HexColorToRgbInt([string]$color)
+                if ($null -ne $colorValue) { $slide.Background.Fill.ForeColor.RGB = $colorValue }
+            }
+            if ($imagePath) {
+                $slide.FollowMasterBackground = $false
+                $slide.Background.Fill.UserPicture($imagePath)
+            }
+        } else {
+            if ($p.color) {
+                $colorValue = Convert-HexColorToRgbInt([string]$p.color)
+                if ($null -ne $colorValue) { $slide.Background.Fill.ForeColor.RGB = $colorValue }
+            }
+            if ($p.imagePath) {
+                $slide.FollowMasterBackground = $false
+                $slide.Background.Fill.UserPicture($p.imagePath)
+            }
         }
         Output-Json @{ success = $true; data = @{ slideIndex = $slideIndex } }
     }
@@ -4303,8 +4328,9 @@ switch ($Action) {
         $slideIndex = if ($p.slideIndex) { $p.slideIndex } else { 1 }
         $slide = $pres.Slides.Item($slideIndex)
         $seq = $slide.TimeLine.MainSequence
-        if ($p.index) {
-            $seq.Item($p.index).Delete()
+        $animationIndex = if ($null -ne $p.animationIndex) { $p.animationIndex } else { $p.index }
+        if ($null -ne $animationIndex) {
+            $seq.Item($animationIndex).Delete()
         } else {
             while ($seq.Count -gt 0) { $seq.Item(1).Delete() }
         }
@@ -4333,9 +4359,11 @@ switch ($Action) {
         $slideIndex = if ($p.slideIndex) { $p.slideIndex } else { 1 }
         $slide = $pres.Slides.Item($slideIndex)
         $seq = $slide.TimeLine.MainSequence
-        $effect = $seq.Item($p.from)
-        $effect.MoveTo($p.to)
-        Output-Json @{ success = $true; data = @{ from = $p.from; to = $p.to } }
+        $animationIndex = if ($null -ne $p.animationIndex) { $p.animationIndex } else { $p.from }
+        $newOrder = if ($null -ne $p.newOrder) { $p.newOrder } else { $p.to }
+        $effect = $seq.Item($animationIndex)
+        $effect.MoveTo($newOrder)
+        Output-Json @{ success = $true; data = @{ from = $animationIndex; to = $newOrder } }
     }
 
     "removeSlideTransition" {
@@ -4677,7 +4705,8 @@ switch ($Action) {
             creative = @{ title = 0xFF6B6B; body = 0x4A4A4A }
             minimal = @{ title = 0x000000; body = 0x666666 }
         }
-        $scheme = $schemes[$p.style]
+        $schemeKey = if ($p.colorScheme) { $p.colorScheme } elseif ($p.style) { $p.style } else { "business" }
+        $scheme = $schemes[$schemeKey]
         if ($null -eq $scheme) { $scheme = $schemes["business"] }
         $count = 0
         for ($j = 1; $j -le $slide.Shapes.Count; $j++) {
@@ -4691,7 +4720,7 @@ switch ($Action) {
                 }
             } catch {}
         }
-        Output-Json @{ success = $true; data = @{ style = $p.style; count = $count } }
+        Output-Json @{ success = $true; data = @{ style = $schemeKey; count = $count } }
     }
 
     default {

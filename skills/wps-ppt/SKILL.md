@@ -275,11 +275,11 @@ wps_office_execute({
 | 工具名称 | 功能 | 关键参数 |
 |---------|------|---------|
 | `addSlide` | 添加幻灯片 | `layout`, `title` |
-| `deleteSlide` | 删除幻灯片 | `index` |
-| `duplicateSlide` | 复制幻灯片 | `index` |
+| `deleteSlide` | 删除幻灯片 | `slideIndex` |
+| `duplicateSlide` | 复制幻灯片 | `slideIndex` |
 | `moveSlide` | 移动幻灯片 | `fromIndex`, `toIndex` |
-| `switchSlide` | 切换幻灯片 | `index` |
-| `getSlideInfo` | 获取幻灯片信息 | `index` |
+| `switchSlide` | 切换幻灯片 | `slideIndex` |
+| `getSlideInfo` | 获取幻灯片信息 | `slideIndex` |
 | `setSlideLayout` | 设置幻灯片布局 | `index` |
 
 ### 文本操作
@@ -287,8 +287,8 @@ wps_office_execute({
 |---------|------|---------|
 | `addTextBox` | 添加文本框 | `text` |
 | `setTextBoxText` | 设置文本框内容 | `index`, `text` |
-| `setSlideTitle` | 设置幻灯片标题 | `index`, `title` |
-| `setSlideContent` | 设置幻灯片内容 | `index` |
+| `setSlideTitle` | 设置幻灯片标题 | `slideIndex`, `title` |
+| `setSlideContent` | 设置幻灯片内容 | `slideIndex`, `content` |
 
 ### 形状操作
 | 工具名称 | 功能 | 关键参数 |
@@ -302,7 +302,7 @@ wps_office_execute({
 ### 美化功能
 | 工具名称 | 功能 | 关键参数 |
 |---------|------|---------|
-| `beautifySlide` | 美化幻灯片 | `index` |
+| `beautifySlide` | 美化幻灯片 | `slideIndex`, `colorScheme`, `font`, `beautifyAll` |
 | `beautifyAllSlides` | 美化所有幻灯片 | - |
 | `applyColorScheme` | 应用配色方案 | - |
 | `unifyFont` | 统一字体 | `fontName` |
@@ -311,9 +311,9 @@ wps_office_execute({
 ### 动画效果
 | 工具名称 | 功能 | 关键参数 |
 |---------|------|---------|
-| `addAnimation` | 添加动画 | `index` |
-| `removeAnimation` | 删除动画 | `index` |
-| `setSlideTransition` | 设置切换效果 | `index`, `effect` |
+| `addAnimation` | 添加动画 | `slideIndex`, `shapeIndex`, `effect`, `trigger` |
+| `removeAnimation` | 删除动画 | `slideIndex`, `animationIndex` |
+| `setSlideTransition` | 设置切换效果 | `slideIndex`, `effect`, `advanceAfter`, `sound` |
 | `applyTransitionToAll` | 应用切换到全部 | `effect` |
 
 ### 图表与表格
@@ -326,7 +326,7 @@ wps_office_execute({
 ### 背景设置
 | 工具名称 | 功能 | 关键参数 |
 |---------|------|---------|
-| `setSlideBackground` | 设置幻灯片背景 | `index` |
+| `setSlideBackground` | 设置幻灯片背景 | `slideIndex`, `background` |
 | `setBackgroundGradient` | 设置渐变背景 | - |
 | `setBackgroundImage` | 设置背景图片 | - |
 | `setMasterBackground` | 设置母版背景 | - |

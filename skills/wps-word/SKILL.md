@@ -319,13 +319,13 @@ wps_office_execute({
 ### 页面设置
 | 工具名称 | 功能 | 关键参数 |
 |---------|------|---------|
-| `setPageSetup` | 页面设置 | `pageWidth`, `pageHeight` |
+| `setPageSetup` | 页面设置 | `orientation`, `marginTop`, `marginBottom`, `marginLeft`, `marginRight` |
 
 ### 插入内容
 | 工具名称 | 功能 | 关键参数 |
 |---------|------|---------|
 | `insertTable` | 插入表格 | `rows`, `cols` |
-| `insertImage` | 插入图片 | `filePath` |
+| `insertImage` | 插入图片 | `imagePath`, `width`, `height` |
 | `insertHyperlink` | 插入超链接 | `text`, `address` |
 | `insertBookmark` | 插入书签 | `name` |
 
@@ -340,9 +340,7 @@ wps_office_execute({
 ### 模板填写
 | 工具名称 | 功能 | 关键参数 |
 |---------|------|---------|
-| `smartFillField` | 智能填写字段 | `keyword`, `value` |
-| `afterColon` | 冒号后填写 | `value` |
-| `afterLabel` | 标签后填写 | `value` |
+| `smartFillField` | 智能填写（支持 fillMode: auto/underline/afterColon/afterLabel/placeholder） | `keyword`, `value`, `fillMode` |
 
 ## 注意事项
 

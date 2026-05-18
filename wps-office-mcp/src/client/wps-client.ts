@@ -64,39 +64,48 @@ async function execMacPoll(action: string, params: Record<string, unknown> = {})
 
 /**
  * 执行PowerShell命令 (Windows)
+ * 返回进程引用以便调用方在超时时终止
  */
-async function execPowerShell(action: string, params: Record<string, unknown> = {}): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const paramsJson = JSON.stringify(params);
-    const args = [
-      '-ExecutionPolicy', 'Bypass',
-      '-File', PS_SCRIPT_PATH,
-      '-Action', action,
-      '-Params', paramsJson
-    ];
+function spawnPowerShell(action: string, params: Record<string, unknown> = {}): {
+  process: import('child_process').ChildProcess;
+  result: Promise<unknown>;
+} {
+  const paramsJson = JSON.stringify(params);
+  const args = [
+    '-ExecutionPolicy', 'Bypass',
+    '-File', PS_SCRIPT_PATH,
+    '-Action', action,
+    '-Params', paramsJson
+  ];
 
-    log.debug('Executing PowerShell', { action, params });
+  log.debug('Executing PowerShell', { action, params });
 
-    const ps = spawn('powershell', args, {
-      windowsHide: true,
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
+  const ps = spawn('powershell', args, {
+    windowsHide: true,
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
 
-    let stdout = '';
-    let stderr = '';
+  let stdout = '';
+  let stderr = '';
 
-    ps.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
+  ps.stdout.on('data', (data) => {
+    stdout += data.toString();
+  });
 
-    ps.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
+  ps.stderr.on('data', (data) => {
+    stderr += data.toString();
+  });
 
+  const result = new Promise<unknown>((resolve, reject) => {
     ps.on('close', (code) => {
-      if (code !== 0 && stderr) {
-        log.error('PowerShell error', { stderr, code });
-        reject(new Error(stderr));
+      if (code !== 0) {
+        if (stderr) {
+          log.error('PowerShell error', { stderr, code, pid: ps.pid, action });
+          reject(new Error(stderr));
+        } else {
+          log.error('PowerShell exited with non-zero code', { code, stdout, pid: ps.pid, action });
+          reject(new Error(`PowerShell 退出码: ${code}, 输出: ${stdout || '(空)'}`));
+        }
         return;
       }
 
@@ -104,7 +113,7 @@ async function execPowerShell(action: string, params: Record<string, unknown> = 
         const result = JSON.parse(stdout.trim());
         resolve(result);
       } catch (e) {
-        log.error('Failed to parse PowerShell output', { stdout });
+        log.error('Failed to parse PowerShell output', { stdout, pid: ps.pid, action });
         reject(new Error(`Invalid JSON output: ${stdout}`));
       }
     });
@@ -113,6 +122,13 @@ async function execPowerShell(action: string, params: Record<string, unknown> = 
       reject(err);
     });
   });
+
+  return { process: ps, result };
+}
+
+/** @deprecated 保留兼容，新代码请使用 spawnPowerShell */
+async function execPowerShell(action: string, params: Record<string, unknown> = {}): Promise<unknown> {
+  return spawnPowerShell(action, params).result;
 }
 
 /**
@@ -133,30 +149,41 @@ const COM_TIMEOUT = 5000;
 
 /**
  * 带超时和重试的WPS调用
- * 注：COM 操作无法真正取消，此实现确保超时后不再等待并快速失败
+ * Windows: 超时时主动 kill PowerShell 进程并记录 PID
+ * Mac: Promise.race 快速失败（无法取消 Mac 轮询）
  */
 async function execWpsActionWithRetry(action: string, params: Record<string, unknown> = {}, maxRetries: number = 3): Promise<unknown> {
   let lastError: Error | null = null;
+  const isWin = !isMacPlatform();
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      // 使用 Promise.race 实现超时
-      // 注意：无法真正取消 COM 调用，但可确保不会无限等待
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('COM 调用超时（' + COM_TIMEOUT + 'ms）')), COM_TIMEOUT);
-      });
+      let actionPromise: Promise<unknown>;
 
-      const result = await Promise.race([
-        execWpsAction(action, params),
-        timeoutPromise
-      ]);
+      if (isWin) {
+        // Windows: 通过 spawnPowerShell 拿到进程引用，超时时 kill
+        const { process: ps, result } = spawnPowerShell(action, params);
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => {
+            ps.kill('SIGTERM');
+            log.warn(`COM 调用超时，已终止 PowerShell 进程 (PID: ${ps.pid})`, { action });
+            reject(new Error('COM 调用超时（' + COM_TIMEOUT + 'ms）'));
+          }, COM_TIMEOUT);
+        });
+        actionPromise = Promise.race([result, timeoutPromise]);
+      } else {
+        // Mac: 使用已有 execMacPoll，Promise.race 快速失败
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('COM 调用超时（' + COM_TIMEOUT + 'ms）')), COM_TIMEOUT);
+        });
+        actionPromise = Promise.race([execWpsAction(action, params), timeoutPromise]);
+      }
 
-      return result;
+      return await actionPromise;
     } catch (error) {
       lastError = error as Error;
       const errMsg = error instanceof Error ? error.message : String(error);
 
-      // 超时是快速失败的友好错误，不记录为严重警告
       if (errMsg.includes('超时')) {
         log.info(`WPS call timeout, attempt ${attempt}/${maxRetries}`, { action });
       } else {
@@ -164,7 +191,6 @@ async function execWpsActionWithRetry(action: string, params: Record<string, unk
       }
 
       if (attempt < maxRetries) {
-        // 等待后重试（指数退避）
         await new Promise(resolve => setTimeout(resolve, 500 * attempt));
       }
     }

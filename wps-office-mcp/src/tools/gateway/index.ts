@@ -1,6 +1,6 @@
 /**
  * WPS Office COM Actions 索引
- * 共 239 个 COM Actions
+ * 共 238 个 COM Actions（afterColon/afterLabel 已移除，改用 smartFillField fillMode）
  *
  * 工具名称映射说明：
  * - Gateway 使用短名称（如 setFont、addSlide）进行索引和搜索
@@ -27,16 +27,44 @@ export interface ToolIndexItem {
 }
 
 import { wpsClient } from '../../client/wps-client';
-import { ToolCallResult, ToolHandler } from '../../types/tools';
+import { ToolCallResult, ToolHandler, ToolInputSchema } from '../../types/tools';
 import { WpsAppType } from '../../types/wps';
 import { allTools } from '../index';
 
 export interface ToolParamSchema {
   type: 'string' | 'number' | 'boolean' | 'object' | 'array';
-  description: string;
+  description?: string;
   required: boolean;
   default?: unknown;
   enum?: string[];
+}
+
+// ==================== Schema 自动生成 ====================
+// 从注册工具定义自动生成 COM_ACTIONS 的 paramsSchema，消除双重定义
+// 纯 PS1 工具（无对应注册工具）仍使用硬编码 paramsSchema 作为兜底
+
+function reverseParamMap(forward: Record<string, string>): Record<string, string> {
+  const rev: Record<string, string> = {};
+  for (const [k, v] of Object.entries(forward)) rev[v] = k;
+  return rev;
+}
+
+function inputSchemaToParamsSchema(
+  inputSchema: ToolInputSchema,
+  revMap?: Record<string, string>
+): Record<string, ToolParamSchema> {
+  const requiredSet = new Set(inputSchema.required || []);
+  const params: Record<string, ToolParamSchema> = {};
+  for (const [key, prop] of Object.entries(inputSchema.properties || {})) {
+    const mappedKey = revMap?.[key] ?? key;
+    params[mappedKey] = {
+      type: prop.type,
+      description: prop.description,
+      required: requiredSet.has(key),
+    };
+    if (prop.enum) params[mappedKey].enum = prop.enum;
+  }
+  return params;
 }
 
 // ==================== 工具验证状态 ====================
@@ -46,27 +74,70 @@ export interface ToolParamSchema {
 
 // 将 wps_xxx_xxx 风格的短名称转为驼峰 (set_font → setFont)
 function toCamelCase(snake: string): string {
-  return snake.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+  return snake.replace(/_(.)/g, (_, c) => c.toUpperCase());
 }
 
-// 将驼峰参数名转为蛇形 (fontName → font_name)，使 COM schema params
-// 能与 TS handler 的 snake_case 参数名匹配
-function camelToSnake(obj: Record<string, unknown>): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(obj)) {
-    const snakeKey = key.replace(/([A-Z])/g, '_$1').toLowerCase();
-    result[snakeKey] = value;
-  }
-  return result;
+// 工具注册名 → appType 映射（从 name 前缀推断，值与 WpsAppType 一致）
+function appTypeFromName(name: string): string {
+  const prefix = name.match(/^wps_(word|excel|ppt|common)_/i)?.[1]?.toLowerCase();
+  if (prefix === 'excel') return 'et';
+  if (prefix === 'ppt') return 'wpp';
+  return 'wps';
 }
 
-// 从注册工具中预先构建 handler 映射表：COM 短名 → TS handler
-// 使 executeTool 能优先走带参数校验的 TS handler，避免裸调 PS1
+// 逐工具参数名映射：COM_ACTIONS 的 camelCase 参数名 → TS handler 的期望参数名
+// 仅在 COM schema 与 handler inputSchema 参数名不一致时需要
+const HANDLER_PARAM_MAP: Record<string, Record<string, string>> = {
+  setFont: { fontName: 'font_name', fontSize: 'font_size' },
+  applyStyle: { styleName: 'style_name' },
+  beautifySlide: { slideIndex: 'slide_index', colorScheme: 'color_scheme', beautifyAll: 'beautify_all' },
+  findInDocument: { text: 'find_text', matchCase: 'match_case', matchWholeWord: 'match_whole_word', maxResults: 'max_results' },
+  replaceBookmarkContent: { content: 'text' },
+  smartFillField: { fillMode: 'fill_mode' },
+  getDocumentParagraphs: { startParagraph: 'start_paragraph', endParagraph: 'end_paragraph' },
+};
+
+// 无工具需要跳过 handler 路由（所有 COM schema 参数名已与 handler inputSchema 对齐）
+const HANDLER_SKIP = new Set<string>();
+
+// 从注册工具中预先构建 handler 映射表：COM 短名 + appType → TS handler
+// 使用 "name|appType" 复合键解决跨应用同名冲突（如 insertImage 同时存在于 Word 和 PPT）
+// 使 executeTool 能根据 TOOLS_INDEX 中的 appType 精确路由到正确的 handler
 const HANDLER_MAP = new Map<string, ToolHandler>();
 for (const tool of allTools) {
   const shortName = tool.definition.name.replace(/^wps_(word|excel|ppt|common)_/i, '');
   const camelName = toCamelCase(shortName);
-  HANDLER_MAP.set(camelName, tool.handler);
+  const appType = appTypeFromName(tool.definition.name);
+  const key = `${camelName}|${appType}`;
+  if (HANDLER_MAP.has(key)) {
+    console.warn(`[HANDLER_MAP] 重复键：${key}（来自 ${tool.definition.name}）`);
+  }
+  HANDLER_MAP.set(key, tool.handler);
+}
+// 处理命名不遵循 wps_{word|excel|ppt|common}_ 约定的工具
+// wps_convert_to_pdf 无 common 段，toCamelCase 产生 wpsConvertToPdf 而非 convertToPDF
+const pdfTool = allTools.find(t => t.definition.name === 'wps_convert_to_pdf');
+if (pdfTool) {
+  HANDLER_MAP.set('convertToPDF|wps', pdfTool.handler);
+}
+const paragraphsTool = allTools.find(t => t.definition.name === 'wps_word_get_paragraphs');
+if (paragraphsTool) {
+  HANDLER_MAP.set('getDocumentParagraphs|wps', paragraphsTool.handler);
+}
+
+// 构建 schema 映射表：COM 短名 → paramsSchema
+// 优先从注册工具定义自动生成，消除 COM_ACTIONS 的 paramsSchema 双重定义
+const SCHEMA_MAP = new Map<string, Record<string, ToolParamSchema>>();
+for (const tool of allTools) {
+  const shortName = tool.definition.name.replace(/^wps_(word|excel|ppt|common)_/i, '');
+  const camelName = toCamelCase(shortName);
+  const revMap = reverseParamMap(HANDLER_PARAM_MAP[camelName] || {});
+  const schema = inputSchemaToParamsSchema(tool.definition.inputSchema, revMap);
+  if (Object.keys(schema).length > 0) SCHEMA_MAP.set(camelName, schema);
+}
+if (paragraphsTool) {
+  const schema = inputSchemaToParamsSchema(paragraphsTool.definition.inputSchema);
+  if (Object.keys(schema).length > 0) SCHEMA_MAP.set('getDocumentParagraphs', schema);
 }
 
 const VERIFIED_TOOLS = new Set([
@@ -83,7 +154,7 @@ const VERIFIED_TOOLS = new Set([
   'getDocumentParagraphs', 'getDocumentStats',
   'insertTable', 'insertImage', 'setPageSetup', 'insertHeader', 'insertFooter',
   'insertHyperlink', 'insertPageBreak', 'setHyperlink',
-  'smartFillField', 'addComment', 'getComments', 'afterColon', 'afterLabel', 'insertText',
+  'smartFillField', 'addComment', 'getComments', 'insertText',
   'switchDocument', 'getOpenDocuments',
   // === Excel ===
   'getActiveWorkbook', 'getCellValue', 'setCellValue', 'getRangeData', 'setRangeData',
@@ -159,23 +230,21 @@ const COM_ACTIONS: ToolIndexItem[] = [
   { name: 'insertBookmark', description: '插入书签', keywords: ['书签'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { name: { type: 'string', description: '书签名称', required: true } } },
   { name: 'getBookmarks', description: '获取文档中所有书签', keywords: ['书签'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: {} },
   { name: 'replaceBookmarkContent', description: '替换书签内容', keywords: ['书签', '替换'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { name: { type: 'string', description: '书签名称', required: true }, content: { type: 'string', description: '替换内容', required: true } } },
-  { name: 'findInDocument', description: '在文档中查找文本', keywords: ['查找'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { text: { type: 'string', description: '查找文本', required: true } } },
+  { name: 'findInDocument', description: '在文档中查找文本', keywords: ['查找'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { text: { type: 'string', description: '查找文本', required: true }, matchCase: { type: 'boolean', description: '区分大小写，默认false', required: false }, matchWholeWord: { type: 'boolean', description: '全词匹配，默认false', required: false }, maxResults: { type: 'number', description: '最大返回结果数，默认10', required: false } } },
   { name: 'findReplace', description: '查找替换', keywords: ['替换'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { find: { type: 'string', description: '查找内容', required: true }, replace: { type: 'string', description: '替换为', required: true } } },
-  { name: 'getDocumentParagraphs', description: '获取文档段落列表', keywords: ['段落'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: {} },
+  { name: 'getDocumentParagraphs', description: '获取文档段落列表', keywords: ['段落'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { startParagraph: { type: 'number', description: '起始段落索引（从1开始），默认1', required: false }, endParagraph: { type: 'number', description: '结束段落索引，默认起始+49', required: false } } },
   { name: 'getDocumentStats', description: '获取文档统计信息', keywords: ['统计'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: {} },
   { name: 'insertTable', description: '插入表格', keywords: ['表格'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { rows: { type: 'number', description: '行数', required: true }, cols: { type: 'number', description: '列数', required: true } } },
-  { name: 'insertImage', description: '插入图片', keywords: ['图片'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { filePath: { type: 'string', description: '图片路径', required: true } } },
-  { name: 'setPageSetup', description: '设置页面布局', keywords: ['页面'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { pageWidth: { type: 'number', description: '页宽', required: false } } },
+  { name: 'insertImage', description: '插入图片', keywords: ['图片'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { imagePath: { type: 'string', description: '图片文件路径', required: true }, width: { type: 'number', description: '图片宽度（磅），可选', required: false }, height: { type: 'number', description: '图片高度（磅），可选', required: false } } },
+  { name: 'setPageSetup', description: '设置页面布局', keywords: ['页面'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { orientation: { type: 'string', description: '页面方向: "portrait"(纵向) 或 "landscape"(横向)', enum: ['portrait', 'landscape'], required: false }, marginTop: { type: 'number', description: '上边距（磅值）', required: false }, marginBottom: { type: 'number', description: '下边距（磅值）', required: false }, marginLeft: { type: 'number', description: '左边距（磅值）', required: false }, marginRight: { type: 'number', description: '右边距（磅值）', required: false } } },
   { name: 'insertHeader', description: '插入页眉', keywords: ['页眉'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { text: { type: 'string', description: '页眉内容', required: true } } },
   { name: 'insertFooter', description: '插入页脚', keywords: ['页脚'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { text: { type: 'string', description: '页脚内容', required: true } } },
   { name: 'insertHyperlink', description: '插入超链接', keywords: ['超链接'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { text: { type: 'string', description: '链接文本', required: true }, address: { type: 'string', description: '链接地址', required: true } } },
   { name: 'insertPageBreak', description: '插入分页符', keywords: ['分页'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: {} },
   { name: 'setHyperlink', description: '设置超链接', keywords: ['超链接'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { text: { type: 'string', description: '链接文本', required: true }, address: { type: 'string', description: '链接地址', required: true } } },
-  { name: 'smartFillField', description: '智能填写模板字段', keywords: ['模板', '填写'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { keyword: { type: 'string', description: '关键字', required: true }, value: { type: 'string', description: '填写值', required: true } } },
+  { name: 'smartFillField', description: '智能填写模板字段', keywords: ['模板', '填写'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { keyword: { type: 'string', description: '关键字', required: true }, value: { type: 'string', description: '填写值', required: true }, fillMode: { type: 'string', description: '填写模式: auto(自动), underline(下划线), afterColon(冒号后), afterLabel(标签后), placeholder(占位符)', enum: ['auto', 'underline', 'afterColon', 'afterLabel', 'placeholder'], required: false } } },
   { name: 'addComment', description: '添加批注', keywords: ['批注'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { text: { type: 'string', description: '批注内容', required: true } } },
   { name: 'getComments', description: '获取文档批注列表', keywords: ['批注'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: {} },
-  { name: 'afterColon', description: '冒号后填写', keywords: ['填写', '冒号'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { value: { type: 'string', description: '填写值', required: true } } },
-  { name: 'afterLabel', description: '标签后填写', keywords: ['填写', '标签'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { value: { type: 'string', description: '填写值', required: true } } },
   { name: 'insertText', description: '插入文本', keywords: ['文本', '插入'], category: 'word', appType: WpsAppType.WRITER, paramsSchema: { text: { type: 'string', description: '文本内容', required: true } } },
 
   // Excel 操作 (~120)
@@ -280,33 +349,33 @@ const COM_ACTIONS: ToolIndexItem[] = [
   { name: 'closePresentation', description: '关闭演示文稿', keywords: ['关闭'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: {} },
   { name: 'getSlideCount', description: '获取幻灯片数量', keywords: ['数量'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: {} },
   { name: 'addSlide', description: '添加幻灯片', keywords: ['添加'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { layout: { type: 'string', description: '布局', required: false } } },
-  { name: 'deleteSlide', description: '删除幻灯片', keywords: ['删除'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { index: { type: 'number', description: '页码', required: true } } },
-  { name: 'duplicateSlide', description: '复制幻灯片', keywords: ['复制'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { index: { type: 'number', description: '页码', required: true } } },
+  { name: 'deleteSlide', description: '删除幻灯片', keywords: ['删除'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { slideIndex: { type: 'number', description: '幻灯片索引（从1开始）', required: true } } },
+  { name: 'duplicateSlide', description: '复制幻灯片', keywords: ['复制'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { slideIndex: { type: 'number', description: '幻灯片索引（从1开始）', required: true } } },
   { name: 'moveSlide', description: '移动幻灯片', keywords: ['移动'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { fromIndex: { type: 'number', description: '原位置', required: true }, toIndex: { type: 'number', description: '新位置', required: true } } },
-  { name: 'switchSlide', description: '切换幻灯片', keywords: ['切换'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { index: { type: 'number', description: '页码', required: true } } },
-  { name: 'getSlideInfo', description: '获取幻灯片信息', keywords: ['信息'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { index: { type: 'number', description: '页码', required: true } } },
-  { name: 'getSlideTitle', description: '获取幻灯片标题', keywords: ['标题'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { index: { type: 'number', description: '页码', required: true } } },
-  { name: 'getSlideNotes', description: '获取幻灯片备注', keywords: ['备注'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { index: { type: 'number', description: '页码', required: true } } },
-  { name: 'setSlideTitle', description: '设置幻灯片标题', keywords: ['标题'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { index: { type: 'number', description: '页码', required: true }, title: { type: 'string', description: '标题内容', required: true } } },
-  { name: 'setSlideSubtitle', description: '设置幻灯片副标题', keywords: ['副标题'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { index: { type: 'number', description: '页码', required: true } } },
-  { name: 'setSlideContent', description: '设置幻灯片内容', keywords: ['内容'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { index: { type: 'number', description: '页码', required: true } } },
-  { name: 'setSlideNotes', description: '设置幻灯片备注', keywords: ['备注'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { index: { type: 'number', description: '页码', required: true } } },
-  { name: 'setSlideBackground', description: '设置幻灯片背景', keywords: ['背景'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { index: { type: 'number', description: '页码', required: true } } },
+  { name: 'switchSlide', description: '切换幻灯片', keywords: ['切换'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { slideIndex: { type: 'number', description: '目标幻灯片索引（从1开始）', required: true } } },
+  { name: 'getSlideInfo', description: '获取幻灯片信息', keywords: ['信息'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { slideIndex: { type: 'number', description: '幻灯片索引（从1开始）', required: true } } },
+  { name: 'getSlideTitle', description: '获取幻灯片标题', keywords: ['标题'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { slideIndex: { type: 'number', description: '幻灯片索引（从1开始）', required: true } } },
+  { name: 'getSlideNotes', description: '获取幻灯片备注', keywords: ['备注'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { slideIndex: { type: 'number', description: '幻灯片索引（从1开始）', required: true } } },
+  { name: 'setSlideTitle', description: '设置幻灯片标题', keywords: ['标题'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { slideIndex: { type: 'number', description: '幻灯片索引（从1开始），默认1', required: false }, title: { type: 'string', description: '标题文本', required: true } } },
+  { name: 'setSlideSubtitle', description: '设置幻灯片副标题', keywords: ['副标题'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { slideIndex: { type: 'number', description: '幻灯片索引（从1开始）', required: true }, subtitle: { type: 'string', description: '副标题内容', required: true } } },
+  { name: 'setSlideContent', description: '设置幻灯片内容', keywords: ['内容'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { slideIndex: { type: 'number', description: '幻灯片索引（从1开始）', required: true }, content: { type: 'string', description: '正文内容', required: true } } },
+  { name: 'setSlideNotes', description: '设置幻灯片备注', keywords: ['备注'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { slideIndex: { type: 'number', description: '幻灯片索引（从1开始）', required: true }, notes: { type: 'string', description: '备注内容', required: true } } },
+  { name: 'setSlideBackground', description: '设置幻灯片背景', keywords: ['背景'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { slideIndex: { type: 'number', description: '幻灯片页码（从1开始）', required: true }, background: { type: 'object', description: '背景配置对象，包含 type/color/colors/imagePath/pattern 等字段（也可使用旧平铺参数 color/imagePath）', required: false } } },
   { name: 'setBackgroundColor', description: '设置背景颜色', keywords: ['背景'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { color: { type: 'string', description: '颜色', required: true } } },
   { name: 'setBackgroundGradient', description: '设置背景渐变', keywords: ['背景', '渐变'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: {} },
-  { name: 'setBackgroundImage', description: '设���背景图片', keywords: ['背景'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: {} },
-  { name: 'setSlideTransition', description: '设置切换效果', keywords: ['切换'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { index: { type: 'number', description: '页码', required: true }, effect: { type: 'string', description: '效果', required: true } } },
-  { name: 'removeSlideTransition', description: '删除切换效果', keywords: ['切换'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { index: { type: 'number', description: '页码', required: true } } },
+  { name: 'setBackgroundImage', description: '设置背景图片', keywords: ['背景'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: {} },
+  { name: 'setSlideTransition', description: '设置切换效果', keywords: ['切换'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { slideIndex: { type: 'number', description: '幻灯片页码（从1开始）', required: true }, effect: { type: 'string', description: '切换效果名称', required: true }, advanceAfter: { type: 'number', description: '自动翻页间隔时间（秒），不填则手动翻页', required: false }, sound: { type: 'string', description: '切换时播放的声音文件路径（可选）', required: false } } },
+  { name: 'removeSlideTransition', description: '删除切换效果', keywords: ['切换'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { slideIndex: { type: 'number', description: '幻灯片页码（从1开始）', required: true } } },
   { name: 'applyTransitionToAll', description: '应用切换到全部', keywords: ['切换'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { effect: { type: 'string', description: '效果', required: true } } },
-  { name: 'addAnimation', description: '添加动画', keywords: ['动画'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { index: { type: 'number', description: '页码', required: true } } },
-  { name: 'removeAnimation', description: '删除动画', keywords: ['动画'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { index: { type: 'number', description: '页码', required: true } } },
-  { name: 'setAnimationOrder', description: '设置动画顺序', keywords: ['动画'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { index: { type: 'number', description: '页码', required: true } } },
-  { name: 'getAnimations', description: '获取动画列表', keywords: ['动画'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { index: { type: 'number', description: '页码', required: true } } },
+  { name: 'addAnimation', description: '添加动画', keywords: ['动画'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { slideIndex: { type: 'number', description: '幻灯片页码（从1开始）', required: true }, shapeIndex: { type: 'number', description: '形状索引（从1开始）', required: true }, effect: { type: 'string', description: '动画效果名称，如 "fadeIn"、"flyIn"、"wipe" 等', required: true }, trigger: { type: 'string', description: '触发方式', enum: ['onClick', 'withPrevious', 'afterPrevious'], required: false } } },
+  { name: 'removeAnimation', description: '删除动画', keywords: ['动画'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { slideIndex: { type: 'number', description: '幻灯片页码（从1开始）', required: true }, animationIndex: { type: 'number', description: '动画索引（从1开始）', required: true } } },
+  { name: 'setAnimationOrder', description: '设置动画顺序', keywords: ['动画'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { slideIndex: { type: 'number', description: '幻灯片页码（从1开始）', required: true }, animationIndex: { type: 'number', description: '当前动画索引（从1开始）', required: true }, newOrder: { type: 'number', description: '新的播放顺序位置（从1开始）', required: true } } },
+  { name: 'getAnimations', description: '获取动画列表', keywords: ['动画'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { slideIndex: { type: 'number', description: '幻灯片页码（从1开始）', required: true } } },
   { name: 'addAnimationPreset', description: '添加预设动画', keywords: ['动画'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: {} },
   { name: 'addEmphasisAnimation', description: '添加强调动画', keywords: ['动画'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: {} },
-  { name: 'beautifySlide', description: '美化幻灯片', keywords: ['美化'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { index: { type: 'number', description: '页码', required: true } } },
+  { name: 'beautifySlide', description: '美化幻灯片', keywords: ['美化'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { slideIndex: { type: 'number', description: '要美化的幻灯片页码，不填则美化当前页', required: false }, colorScheme: { type: 'string', description: '配色方案', enum: ['business', 'tech', 'creative', 'minimal'], required: false }, font: { type: 'string', description: '统一使用的字体，如 "微软雅黑"、"思源黑体"', required: false }, beautifyAll: { type: 'boolean', description: '是否美化所有幻灯片，默认false只美化指定页', required: false } } },
   { name: 'beautifyAllSlides', description: '美化所有幻灯片', keywords: ['美化'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: {} },
-  { name: 'autoBeautifySlide', description: '自动美化幻灯片', keywords: ['美化'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { index: { type: 'number', description: '页码', required: true } } },
+  { name: 'autoBeautifySlide', description: '自动美化幻灯片', keywords: ['美化'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { slideIndex: { type: 'number', description: '幻灯片页码（从1开始）', required: true } } },
   { name: 'unifyFont', description: '统一字体', keywords: ['字体'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { fontName: { type: 'string', description: '字体名称', required: true } } },
   { name: 'addShape', description: '添加形状', keywords: ['形状'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { shapeType: { type: 'string', description: '形状类型', required: true } } },
   { name: 'deleteShape', description: '删除形状', keywords: ['形状'], category: 'ppt', appType: WpsAppType.PRESENTATION, paramsSchema: { index: { type: 'number', description: '索引', required: true } } },
@@ -444,7 +513,7 @@ export function searchTools(options: SearchOptions): SearchResult {
     description: tool.description.split('\n')[0],
     category: tool.category,
     appType: tool.appType,
-    params: tool.paramsSchema,
+    params: SCHEMA_MAP.get(tool.name) ?? tool.paramsSchema,
     example: `wps_office_execute('${tool.name}', {...})`,
   }));
   return { total: filtered.length, results, next_steps: "使用 wps_office_execute 执行" };
@@ -466,12 +535,21 @@ export async function executeTool(options: ExecuteOptions): Promise<ToolCallResu
     };
   }
   // 优先使用 TS handler（带参数校验、类型安全、详细错误信息）
-  const handler = HANDLER_MAP.get(tool_name);
-  if (handler) {
-    // 将 COM 风格的 camelCase 参数转为 TS handler 的 snake_case
-    const convertedArgs = camelToSnake(args);
+  // 用 "name|appType" 复合键精确匹配，处理跨应用同名工具
+  const camelName = toCamelCase(tool_name);
+  const handlerKey = `${tool_name}|${indexItem.appType}`;
+  const fallbackKey = `${camelName}|${indexItem.appType}`;
+  const handler = HANDLER_MAP.get(handlerKey) ?? HANDLER_MAP.get(fallbackKey);
+  if (handler && !HANDLER_SKIP.has(tool_name)) {
+    // 应用逐工具参数名映射（将 COM 参数名转为 handler 期望的参数名）
+    const paramMap = HANDLER_PARAM_MAP[tool_name];
+    const mappedArgs = paramMap && Object.keys(paramMap).length > 0
+      ? Object.fromEntries(
+          Object.entries(args).map(([k, v]) => [paramMap[k] ?? k, v])
+        )
+      : args;
     try {
-      return await handler(convertedArgs);
+      return await handler(mappedArgs);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return {

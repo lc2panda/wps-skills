@@ -706,16 +706,16 @@ export const getParagraphsHandler: ToolHandler = async (
   };
 
   try {
+    const execParams: Record<string, unknown> = {};
+    if (start_paragraph != null) execParams.startParagraph = start_paragraph;
+    if (end_paragraph != null) execParams.endParagraph = end_paragraph;
     const response = await wpsClient.executeMethod<{
       paragraphs: Array<{ index: number; text: string; style: string; start: number; end: number }>;
       totalCount: number;
       returnedCount: number;
     }>(
       'getDocumentParagraphs',
-      {
-        startParagraph: start_paragraph,
-        endParagraph: end_paragraph,
-      },
+      execParams,
       WpsAppType.WRITER
     );
 
@@ -937,11 +937,11 @@ export const smartFillFieldHandler: ToolHandler = async (
     };
   }
 
-  if (!value) {
+  if (value == null) {
     return {
       id: uuidv4(),
       success: false,
-      content: [{ type: 'text', text: '填写值不能为空！' }],
+      content: [{ type: 'text', text: '填写值不能为空（空字符串将清除该字段内容）' }],
       error: '填写值为空',
     };
   }
@@ -1042,11 +1042,11 @@ export const replaceBookmarkContentHandler: ToolHandler = async (
     };
   }
 
-  if (!text && text !== '') {
+  if (text == null) {
     return {
       id: uuidv4(),
       success: false,
-      content: [{ type: 'text', text: '替换文本不能为空！' }],
+      content: [{ type: 'text', text: '替换文本不能为空（空字符串将清空书签）' }],
       error: '替换文本为空',
     };
   }
