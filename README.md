@@ -7,8 +7,8 @@ AI编程助手通过自然语言操控WPS Office的MCP工具集。
 ## 项目定位
 
 本项目是MCP Server + Skills框架，让AI助手（Claude Code/Cursor/Augment等）能操控WPS Office。
-- 230个MCP专业工具 + 12个内置工具 = 242个
-- 支持Excel(82工具) / Word(27工具) / PPT(112工具) / 通用(9工具)
+- 三层工具体系：231直接注册 + 14内置 + 240 Gateway COM Actions
+- 支持Excel(82工具) / Word(28工具) / PPT(112工具) / 通用(9工具)
 - 支持macOS、Windows、Linux
 
 ## 前提条件
@@ -112,39 +112,67 @@ kill %1 2>/dev/null
 
 ```
 Skills层(SKILL.md自然语言指导)
-  ↓ Claude Code调用
-MCP Server层(242个工具)
+  ↓ OpenCode/Claude选择Agent+Skill
+Agent层(4个专业subagent)
+  ↓ 按需调用
+MCP Server层(三层次工具体系)
+  ├── 内置工具(14个): 基础连接/数据缓存/万能方法
+  ├── Gateway工具(2个): search + execute (发现与执行)
+  └── COM Actions(240个): 通过Gateway按需加载
   ↓ wpsClient.executeMethod()
 执行层
-  ├── macOS: wps-claude-assistant (230 action, HTTP轮询)
-  └── Windows: wps-com.ps1 (241 action, COM接口)
+  ├── macOS: wps-claude-assistant (240 action, HTTP轮询)
+  └── Windows: wps-com.ps1 (240 action, COM接口)
 ```
+
+### 工具渐进式加载
+
+**解决的问题**：传统MCP Server将所有工具一次性注册，数量多(200+)时会导致AI助手工具发现困难、上下文膨胀、调用决策变慢。
+
+**Gateway 模式**（本PR核心改造）：
+
+```
+用户请求 → wps_office_search(关键词搜索) → 返回匹配工具列表 → wps_office_execute(执行)
+```
+
+| 层次 | 数量 | 说明 |
+|------|------|------|
+| 内置工具 | 14个 | 连接检测、单元格读写、缓存、万能方法调用等高频基础操作 |
+| Gateway 搜索 | `wps_office_search` | 通过关键词/分类搜索COM Action，返回工具名+参数schema |
+| Gateway 执行 | `wps_office_execute` | 执行搜索到的COM Action，参数按schema传入 |
+| COM Actions | 240个 | 底层完整API集合，覆盖Excel/Word/PPT全部操作 |
+
+**优势**：
+1. **轻量注册**：MCP协议只注册少量内置工具+2个Gateway，避免200+工具注册
+2. **按需发现**：AI助手通过自然语言关键词发现可用工具，而非从庞大列表中手动挑选
+3. **动态扩展**：新增COM Action只需更新索引，无需修改MCP注册逻辑
+4. **降低延迟**：减少MCP初始化时的工具列表传输量，加快连接速度
 
 ## 工具清单
 
 | 应用 | 工具数 | 主要能力 |
 |------|--------|---------|
 | Excel | 82 | 公式生成/诊断/数据处理/图表导出/透视表/工作表/格式/保护 |
-| Word | 27 | 样式/字体/段落/目录/页眉页脚/查找替换/模板填写/书签/批注 |
+| Word | 28 | 样式/字体/段落/目录/页眉页脚/查找替换/模板填写/书签/批注 |
 | PPT | 112 | 幻灯片/形状/图片/表格/导出/美化/动画/图表/3D/数据可视化 |
 | 通用 | 9 | 保存/连接检测/文本选取/格式转换/PDF导出 |
-| 内置 | 12 | 连接检查/万能方法调用/数据缓存 |
+| 内置 | 14 | 连接检查/万能方法调用/数据缓存/搜索/执行 |
 
-## Skills（自然语言指导）
+## Skills + Agents
 
-| Skill | 核心能力 |
-|-------|---------|
+| Skills（自然语言指导） | 核心能力 |
+|------|---------|
 | wps-word | 文档排版/样式管理/目录生成/**模板填写**/查找替换 |
 | wps-excel | 公式生成/数据清洗/图表透视表/数据分析 |
 | wps-ppt | 幻灯片美化/动画设置/内容生成/排版优化 |
 | wps-office | 跨应用协调/格式转换/批量处理 |
 
-### 新增MCP工具
-
-**Word 模板填写**：
-- `wps_word_smart_fill_field`：智能填写Word模板中的字段
-- `wps_word_replace_bookmark_content`：替换书签内容
-- `wps_word_find_in_document`：查找文本位置
+| Agents（专业subagent） | 模式 | 专精领域 |
+|------|------|---------|
+| wps-word | subagent | Word文档排版/格式/模板填写 |
+| wps-excel | subagent | Excel公式/数据分析/图表 |
+| wps-ppt | subagent | PPT幻灯片美化/动画 |
+| wps-expert | primary | 跨应用协调/复杂任务规划 |
 
 ## 故障排除
 
