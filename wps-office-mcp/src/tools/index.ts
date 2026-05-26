@@ -20,7 +20,7 @@ import { pptTools } from './ppt';
 import { commonTools } from './common';
 
 /**
- * 所有MCP Tools集合（共231个，另有12个内置工具在mcp-server.ts中注册，全局共243个）
+ * 所有MCP Tools集合（共235个，另有12个内置工具在mcp-server.ts中注册，全局共247个）
  *
  * Excel (82个):
  *   公式(6): set_formula, generate_formula, diagnose_formula, set_array_formula, recalculate, auto_sum
@@ -32,10 +32,11 @@ import { commonTools } from './common';
  *   工作簿(10): open_workbook, get_open_workbooks, switch_workbook, close_workbook, create_workbook, get_cell_value, set_cell_value, get_formula, get_cell_info, clear_range
  *   高级数据(7): auto_filter, copy_range, paste_range, fill_series, transpose, text_to_columns, subtotal
  *
- * Word (28个):
+ * Word (32个):
  *   格式化(5): apply_style, set_font, generate_toc, insert_bookmark, set_page_setup
  *   内容(14): insert_text, find_replace, insert_table, set_paragraph, get_active_document, insert_image, insert_page_break, set_font_style, insert_comment, set_text_color, get_paragraphs, find_in_document, smart_fill_field, replace_bookmark_content
  *   文档管理(9): get_open_documents, switch_document, open_document, get_document_text, insert_header, insert_footer, generate_doc_toc, insert_section_break, set_line_spacing
+ *   校对(4): enable_track_changes, get_track_changes_status, replace_range, proofread_basic
  *
  * PPT (112个):
  *   幻灯片(5): add_slide, beautify, unify_font, set_font_color, align_objects
@@ -89,6 +90,7 @@ export {
 export {
   formatTools,
   contentTools,
+  proofreadTools,
   applyStyleDefinition,
   applyStyleHandler,
   setFontDefinition,
