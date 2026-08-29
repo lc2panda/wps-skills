@@ -402,3 +402,47 @@ wps_word_insert_header({
 *Skill by lc2panda - WPS MCP Project*
 
 <!-- 审计记录：2026-03-21 T18 同步工具列表 24个MCP工具，按功能重新分组（格式化5+内容10+文档管理9），与代码100%同步 -->
+
+
+---
+
+## 已知问题与替代方案（2026-08 实测）
+
+> 以下问题在 Windows + 国内版 WPS 12.1.0 环境下实测发现，使用前务必注意。
+
+### 1. `wps_word_set_line_spacing` 不可用（底层缺 action）
+
+MCP 工具层已注册该工具，但底层 `wps-office-mcp/scripts/wps-com.ps1` 中没有 `setLineSpacing` 这个 action，调用会返回 `Unknown action: setLineSpacing`。
+
+**替代方案**：改用 `wps_word_set_paragraph`（底层 action 为 `setParagraph`，支持 lineSpacing 参数）。
+
+### 2. `wps_word_set_page_setup` 返回 undefined（底层 bug）
+
+底层 `setPageSetup` 的 PowerShell 参数处理有 bug，调用返回 `undefined`。
+
+**替代方案**：用 `wps_execute_method` 直调底层 `setPageSetup` action，或离线用 docx 库（python-docx）处理页面设置。
+
+### 3. `wps_word_set_font` 的 `range=all` 会覆盖标题字体
+
+`range=all` 会把全文（含标题）统一成指定字体字号，导致已设置的黑体标题被覆盖为正文宋体。
+
+**正确顺序**：
+1. 先用 `wps_word_find_in_document` 定位各级标题的字符起止位置（备用）
+2. 对正文用 `range=all` 统一字体
+3. 最后用 `wps_word_apply_style` 给标题应用「标题 1」/「标题 2」样式恢复层级
+
+### 4. 标题样式名（实测确认）
+
+`wps_word_apply_style` 的 `style_name` 参数用**带空格**的样式名：
+- 一级标题 → `"标题 1"`
+- 二级标题 → `"标题 2"`
+
+### 5. 建立文档大纲（导航窗格）的推荐流程
+
+默认生成的文档标题全是「正文」样式，没有大纲级别，WPS 导航窗格无法跳转章节。推荐：
+
+1. `wps_word_find_in_document` 逐个定位「一、」「二、」…「八、」等标题 → 拿到字符起止位置
+2. `wps_word_apply_style(range={start,end}, style_name="标题 1")` 应用到所有一级标题
+3. 二级标题（2.1、2.2、3.1…）同理应用 `"标题 2"`
+4. `wps_common_save` 保存
+5. 效果：WPS「视图 → 导航窗格」出现章节树，可点击跳转；「引用 → 目录」可自动生成目录
