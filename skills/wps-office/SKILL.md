@@ -363,3 +363,52 @@ ELSE:
 *Skill by lc2panda - WPS MCP Project*
 
 <!-- 审计记录：2026-03-21 T18 同步工具列表至224个（Excel80+Word24+PPT111+通用9），与代码100%同步 -->
+
+
+---
+
+## Windows 安装注意事项（2026-08 实测）
+
+### 1. `install.ps1` 会卡在交互式提示（无人值守会超时）
+
+`scripts/install.ps1` 用固定路径列表检测 WPS，但**不覆盖**新版 WPS 的
+`%LOCALAPPDATA%\Kingsoft\WPS Office\<版本号>\` 这种带版本号的目录。检测不到时会触发
+`Read-Host` 交互式提示，无人值守执行（如 AI 自动执行）会卡住超时。
+
+**规避方法**：跳过 install.ps1，手动完成其核心步骤：
+1. 复制 `wps-claude-addon/` → `%APPDATA%\kingsoft\wps\jsaddons\wps-claude-addon_`
+2. 在 `jsaddons/` 目录创建 `publish.xml`：
+   ```xml
+   <?xml version="1.0" encoding="UTF-8"?>
+   <jsplugins>
+     <jsplugin name="wps-claude-addon" type="wps,et,wpp" url="wps-claude-addon_/" enable="enable_dev"/>
+   </jsplugins>
+   ```
+
+### 2. Windows 走 PowerShell COM 接口，不依赖加载项
+
+Windows 上 MCP Server 通过 `wps-office-mcp/scripts/wps-com.ps1` 的 PowerShell COM 接口
+直接操作 WPS（`Kwps.Application` / `Ket.Application` / `Kwpp.Application`）。
+`wps-claude-addon` 加载项只是给 WPS 加 ribbon 菜单，是**辅助性**的。即使加载项未生效，
+核心操控功能（ping / wireCheck / getAppInfo / applyStyle / setFont 等）依然可用。
+
+### 3. 验证 COM 桥接是否连通
+
+```bash
+powershell -ExecutionPolicy Bypass -File wps-com.ps1 -Action ping -Params "{}"
+# 期望：{"success":true,"data":{"message":"pong",...}}
+
+powershell -ExecutionPolicy Bypass -File wps-com.ps1 -Action wireCheck -Params "{}"
+# 期望：{"success":true,"data":{"message":"WPS MCP Bridge 已连接"}}
+```
+
+### 4. MCP Server 接入 Hermes（标准 stdio）
+
+```yaml
+mcp_servers:
+  wps-office:
+    command: "node"
+    args: ["C:/Users/Administrator/wps-skills/wps-office-mcp/dist/index.js"]
+```
+
+改完 config.yaml 后必须重启 Hermes（/reset 或重启桌面端）才会加载 MCP 工具。
