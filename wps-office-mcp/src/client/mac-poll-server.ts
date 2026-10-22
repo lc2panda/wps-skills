@@ -17,6 +17,19 @@ import { exec } from 'child_process';
 import * as path from 'path';
 import { log } from '../utils/logger';
 
+// 来源校验：浏览器网页的请求都带 http(s) 网址作为 Origin，一律拒绝，
+// 防止网页偷看待执行命令或伪造结果。WPS 加载项、curl 等本机程序的来源放行。
+// 额外放行的来源用环境变量 WPS_MCP_ALLOWED_ORIGINS（逗号分隔）配置。
+const EXTRA_ORIGINS = (process.env.WPS_MCP_ALLOWED_ORIGINS || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+const seenOrigins = new Set<string>();
+
+function isAllowedOrigin(origin: string | undefined): boolean {
+  if (origin === undefined || origin === '') return true;          // 非浏览器客户端
+  if (EXTRA_ORIGINS.includes(origin)) return true;
+  return !/^https?:\/\//i.test(origin);                             // file://、null、WPS 自定义协议等
+}
+
 // 命令→应用类型映射（完整版，覆盖所有 SKILL.md 动作）
 const COMMAND_APP_MAP: Record<string, string> = {
   // ==================== Excel 命令 ====================
@@ -283,8 +296,20 @@ class MacPollServer {
 
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => {
-        // CORS头 - 必须加，不然WPS加载项的请求会被拦截
-        res.setHeader('Access-Control-Allow-Origin', '*');
+        // 先校验来源，不对浏览器网页开放
+        const origin = req.headers.origin as string | undefined;
+        if (origin !== undefined && !seenOrigins.has(origin)) {
+          seenOrigins.add(origin);
+          log.info('[Mac] Request origin seen', { origin, allowed: isAllowedOrigin(origin) });
+        }
+        if (!isAllowedOrigin(origin)) {
+          log.warn('[Mac] Rejected request from origin', { origin, url: req.url });
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Origin not allowed' }));
+          return;
+        }
+        // CORS头 - 必须加，不然WPS加载项的请求会被拦截（只回显已放行的来源）
+        res.setHeader('Access-Control-Allow-Origin', origin || '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
         res.setHeader('Content-Type', 'application/json');
