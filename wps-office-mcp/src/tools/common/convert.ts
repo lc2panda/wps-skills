@@ -19,6 +19,7 @@ import {
   RegisteredTool,
 } from '../../types/tools';
 import { wpsClient } from '../../client/wps-client';
+import { APP_TARGET_PROPERTY, withTarget } from './target';
 import { WpsAppType } from '../../types/wps';
 
 /**
@@ -143,6 +144,7 @@ export const convertToPdfDefinition: ToolDefinition = {
   inputSchema: {
     type: 'object',
     properties: {
+      ...APP_TARGET_PROPERTY,
       outputPath: {
         type: 'string',
         description: 'PDF输出路径（包含文件名），如不指定则使用原文件路径，把扩展名改为.pdf',
@@ -175,13 +177,13 @@ export const convertToPdfHandler: ToolHandler = async (
       pageCount?: number;
     }>(
       'convertToPDF',
-      {
+      withTarget({
         outputPath: outputPath || '',
         // 跨平台参数对齐：补齐 path/filePath 别名，避免底层只读取单一字段名导致路径丢失
         path: outputPath || '',
         filePath: outputPath || '',
         openAfterExport: openAfterExport || false,
-      }
+      }, args)
       // 不指定appType，让WPS加载项自动检测当前活动的应用
     );
 

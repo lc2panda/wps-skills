@@ -170,16 +170,19 @@ export const writeRangeHandler: ToolHandler = async (
   }
 
   try {
-    const success = await wpsClient.setRangeData(sheet || 0, range, data);
+    // 直接拿完整响应，失败时把 WPS 的错误原因带出来（原来只返回“写入数据失败”）
+    const response = await wpsClient.executeMethod<{ range?: string; rows?: number; cols?: number; cells?: number }>(
+      'setRangeData', { sheet: sheet || 0, range, data }, WpsAppType.SPREADSHEET);
 
-    if (success) {
+    if (response.success) {
+      const d = response.data || {};
       return {
         id: uuidv4(),
         success: true,
         content: [
           {
             type: 'text',
-            text: `数据写入成功！\n起始位置: ${range}\n写入规模: ${data.length}行 x ${data[0]?.length || 0}列`,
+            text: `数据写入成功！\n区域: ${d.range || range}\n写入规模: ${d.rows ?? data.length}行 x ${d.cols ?? (data[0]?.length || 0)}列`,
           },
         ],
       };
@@ -187,8 +190,8 @@ export const writeRangeHandler: ToolHandler = async (
       return {
         id: uuidv4(),
         success: false,
-        content: [{ type: 'text', text: '写入数据失败' }],
-        error: '写入失败',
+        content: [{ type: 'text', text: `写入数据失败: ${response.error || '未知原因'}` }],
+        error: response.error || '写入失败',
       };
     }
   } catch (error) {

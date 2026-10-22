@@ -44,7 +44,7 @@ const MAC_POLL_PORT = parseInt(process.env.WPS_MCP_PORT || '58891', 10);
  * 执行Mac轮询调用
  * 通过轮询服务器发送命令，等待WPS加载项取走并返回结果
  */
-async function execMacPoll(action: string, params: Record<string, unknown> = {}): Promise<unknown> {
+async function execMacPoll(action: string, params: Record<string, unknown> = {}, appType?: string): Promise<unknown> {
   log.debug('Executing Mac Poll', { action, params });
 
   try {
@@ -55,7 +55,8 @@ async function execMacPoll(action: string, params: Record<string, unknown> = {})
     }
 
     // 通过轮询服务器执行命令
-    const result = await macPollServer.executeCommand(action, params);
+    // 把目标组件传给轮询服务，按组件分发
+    const result = await macPollServer.executeCommand(action, params, { appType });
     return result;
   } catch (error) {
     log.error('Mac Poll call failed', { action, error });
@@ -157,11 +158,13 @@ async function execPowerShell(action: string, params: Record<string, unknown> = 
  * Mac: 反向轮询模式（MCP Server是服务端，WPS加载项来取命令）
  * Windows: PowerShell调用COM接口
  */
-async function execWpsAction(action: string, params: Record<string, unknown> = {}): Promise<unknown> {
+async function execWpsAction(action: string, params: Record<string, unknown> = {}, appType?: string): Promise<unknown> {
   if (USE_POLL) {
-    return execMacPoll(action, params);
+    return execMacPoll(action, params, appType);
   } else {
-    return execPowerShell(action, params);
+    // targetApp 只用于 Mac 轮询模式选择组件，COM 模式不需要
+    const { targetApp: _targetApp, ...comParams } = params;
+    return execPowerShell(action, comParams);
   }
 }
 
@@ -182,12 +185,12 @@ export class WpsClient {
   /**
    * 调用WPS接口（跨平台）
    */
-  async invokeAction<T = unknown>(action: string, params: Record<string, unknown> = {}): Promise<WpsApiResponse<T>> {
+  async invokeAction<T = unknown>(action: string, params: Record<string, unknown> = {}, appType?: string): Promise<WpsApiResponse<T>> {
     const startTime = Date.now();
     logRequest(action, params);
 
     try {
-      const result = await execWpsAction(action, params) as WpsApiResponse<T>;
+      const result = await execWpsAction(action, params, appType) as WpsApiResponse<T>;
       const duration = Date.now() - startTime;
       logResponse(action, result.success, duration);
 
@@ -338,7 +341,7 @@ export class WpsClient {
     if (appType === WpsAppType.PRESENTATION && pptTargetName && finalParams.presentationName === undefined) {
       finalParams = { ...finalParams, presentationName: pptTargetName };
     }
-    return this.invokeAction<T>(method, finalParams);
+    return this.invokeAction<T>(method, finalParams, appType);
   }
 
   async openFile(filePath: string, _appType?: WpsAppType): Promise<boolean> {
