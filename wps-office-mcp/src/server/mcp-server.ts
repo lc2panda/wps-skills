@@ -19,7 +19,7 @@ import {
 import { toolRegistry, ToolRegistry } from './tool-registry';
 import { wpsClient } from '../client/wps-client';
 import { ToolCallResult, ToolCategory } from '../types/tools';
-import { allTools } from '../tools';
+import { toolsForPlatform } from '../tools';
 import { createChildLogger } from '../utils/logger';
 import { McpError } from '../utils/error';
 
@@ -692,8 +692,10 @@ export class WpsMcpServer {
     this.registerBuiltinTools();
 
     // 注册Excel、Word、PPT专业Tools - 这才是老王的核心功能
-    this.registry.registerAll(allTools);
-    logger.info(`Registered ${allTools.length} professional tools (Excel/Word/PPT)`);
+    // Mac/Linux 不注册加载项未实现的工具
+    const tools = toolsForPlatform();
+    this.registry.registerAll(tools);
+    logger.info(`Registered ${tools.length} professional tools (Excel/Word/PPT)`);
 
     // 创建stdio传输层
     const transport = new StdioServerTransport();

@@ -60,6 +60,39 @@ export const allTools: RegisteredTool[] = [
   ...commonTools,
 ];
 
+/**
+ * Mac/Linux 版加载项（wps-claude-assistant）没有实现这些命令，调用只会报“未知命令”，
+ * 在这两个平台上不注册。Windows（COM）不受影响。以后在加载项里补上实现后，从这里删掉对应项。
+ * 核对方法：python3 -I tools/contract_check.py <仓库根目录>（no_handler 一节）。
+ */
+export const POLL_UNSUPPORTED_TOOLS = new Set<string>([
+  'wps_convert_format',
+  'wps_excel_auto_sum',
+  'wps_excel_evaluate_formula',
+  'wps_excel_set_zoom',
+  'wps_excel_zoom',
+  'wps_ppt_insert_slides_from_file',
+  'wps_ppt_replace_ppt_image',
+  'wps_ppt_set_font_color',
+  'wps_ppt_set_shape_fill',
+  'wps_ppt_set_slide_size',
+  'wps_ppt_set_slide_theme',
+  'wps_word_enable_track_changes',
+  'wps_word_find_in_document',
+  'wps_word_get_paragraphs',
+  'wps_word_get_track_changes_status',
+  'wps_word_insert_section_break',
+  'wps_word_replace_bookmark_content',
+  'wps_word_replace_range',
+  'wps_word_set_line_spacing',
+  'wps_word_set_text_color',
+  'wps_word_smart_fill_field',
+]);
+
+/** 按平台筛掉没实现的工具：Windows 全部注册，Mac/Linux 去掉 POLL_UNSUPPORTED_TOOLS */
+export const toolsForPlatform = (platform: string = process.platform): RegisteredTool[] =>
+  platform === 'win32' ? allTools : allTools.filter(t => !POLL_UNSUPPORTED_TOOLS.has(t.definition.name));
+
 // 按应用类型分别导出
 export { excelTools } from './excel';
 export { wordTools } from './word';

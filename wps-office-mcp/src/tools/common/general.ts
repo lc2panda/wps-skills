@@ -23,6 +23,7 @@ import {
   RegisteredTool,
 } from '../../types/tools';
 import { wpsClient } from '../../client/wps-client';
+import { APP_TARGET_PROPERTY, withTarget } from './target';
 
 // ============================================================
 // 1. wps_common_save - 保存当前文档
@@ -43,26 +44,25 @@ export const saveDefinition: ToolDefinition = {
   category: ToolCategory.COMMON,
   inputSchema: {
     type: 'object',
-    properties: {},
+    properties: { ...APP_TARGET_PROPERTY },
     required: [],
   },
 };
 
 export const saveHandler: ToolHandler = async (
-  _args: Record<string, unknown>
+  args: Record<string, unknown>
 ): Promise<ToolCallResult> => {
   try {
     const response = await wpsClient.executeMethod<{
-      success: boolean;
-      message: string;
-    }>('save', {});
+      filePath?: string;
+    }>('save', withTarget({}, args));
 
     if (response.success) {
       return {
         id: uuidv4(),
         success: true,
         content: [
-          { type: 'text', text: `文档保存成功！${response.data?.message || ''}` },
+          { type: 'text', text: `文档保存成功！${response.data?.filePath ? `\n文件: ${response.data.filePath}` : ''}` },
         ],
       };
     } else {
@@ -104,6 +104,7 @@ export const saveAsDefinition: ToolDefinition = {
   inputSchema: {
     type: 'object',
     properties: {
+      ...APP_TARGET_PROPERTY,
       filePath: {
         type: 'string',
         description: '目标文件完整路径，包含文件名和扩展名',
@@ -145,19 +146,18 @@ export const saveAsHandler: ToolHandler = async (
     }
 
     const response = await wpsClient.executeMethod<{
-      success: boolean;
-      message: string;
-      outputPath: string;
-    }>('saveAs', params);
+      filePath?: string;
+      outputPath?: string;
+    }>('saveAs', withTarget(params, args));
 
-    if (response.success && response.data) {
+    if (response.success) {
       return {
         id: uuidv4(),
         success: true,
         content: [
           {
             type: 'text',
-            text: `另存为成功！\n输出路径: ${response.data.outputPath || filePath}`,
+            text: `另存为成功！\n输出路径: ${response.data?.filePath || response.data?.outputPath || filePath}`,
           },
         ],
       };
@@ -179,6 +179,14 @@ export const saveAsHandler: ToolHandler = async (
     };
   }
 };
+
+/** ping 回复里列出各组件在线情况（由 Mac 轮询服务附加） */
+function describeOnline(response: unknown): string {
+  const online = (response as { online?: Array<{ label: string; doc: string }> })?.online;
+  if (!Array.isArray(online) || online.length === 0) return 'pong';
+  const lines = online.map(o => `- ${o.label}${o.doc ? `：${o.doc}` : '（没开文件）'}`);
+  return `\n在线组件：\n${[...new Set(lines)].join('\n')}`;
+}
 
 // ============================================================
 // 3. wps_common_ping - 检测WPS连接
@@ -218,7 +226,7 @@ export const pingHandler: ToolHandler = async (
         id: uuidv4(),
         success: true,
         content: [
-          { type: 'text', text: `WPS连接正常！${response.data?.message || 'pong'}` },
+          { type: 'text', text: `WPS连接正常！${describeOnline(response)}` },
         ],
       };
     } else {
@@ -332,13 +340,13 @@ export const getAppInfoDefinition: ToolDefinition = {
   category: ToolCategory.COMMON,
   inputSchema: {
     type: 'object',
-    properties: {},
+    properties: { ...APP_TARGET_PROPERTY },
     required: [],
   },
 };
 
 export const getAppInfoHandler: ToolHandler = async (
-  _args: Record<string, unknown>
+  args: Record<string, unknown>
 ): Promise<ToolCallResult> => {
   try {
     const response = await wpsClient.executeMethod<{
@@ -348,7 +356,7 @@ export const getAppInfoHandler: ToolHandler = async (
       build?: string;
       platform?: string;
       activeDocument?: string;
-    }>('getAppInfo', {});
+    }>('getAppInfo', withTarget({}, args));
 
     if (response.success && response.data) {
       const data = response.data;
@@ -402,20 +410,20 @@ export const getSelectedTextDefinition: ToolDefinition = {
   category: ToolCategory.COMMON,
   inputSchema: {
     type: 'object',
-    properties: {},
+    properties: { ...APP_TARGET_PROPERTY },
     required: [],
   },
 };
 
 export const getSelectedTextHandler: ToolHandler = async (
-  _args: Record<string, unknown>
+  args: Record<string, unknown>
 ): Promise<ToolCallResult> => {
   try {
     const response = await wpsClient.executeMethod<{
       success: boolean;
       message: string;
       text: string;
-    }>('getSelectedText', {});
+    }>('getSelectedText', withTarget({}, args));
 
     if (response.success && response.data) {
       const text = response.data.text;
@@ -472,6 +480,7 @@ export const setSelectedTextDefinition: ToolDefinition = {
   inputSchema: {
     type: 'object',
     properties: {
+      ...APP_TARGET_PROPERTY,
       text: {
         type: 'string',
         description: '要替换为的新文本内容',
@@ -499,7 +508,7 @@ export const setSelectedTextHandler: ToolHandler = async (
     const response = await wpsClient.executeMethod<{
       success: boolean;
       message: string;
-    }>('setSelectedText', { text });
+    }>('setSelectedText', withTarget({ text }, args));
 
     if (response.success) {
       return {

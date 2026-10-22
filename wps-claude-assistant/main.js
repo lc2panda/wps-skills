@@ -15,6 +15,95 @@ var CONFIG = {
     POLL_INTERVAL: 500  // 轮询间隔ms
 };
 
+// 每个加载项实例一个随机编号。轮询时连同组件类型、当前文件名一起报给服务端，
+// 服务端据此只把本组件的命令派给本实例（Mac 版多个组件的加载项会同时轮询）。
+var INSTANCE_ID = Math.random().toString(36).slice(2, 8);
+
+// Mac 版 WPS 抛出的异常常常不是 Error 对象，e.message 为 undefined，统一转成可读文字
+function errMsg(e) {
+    if (e === undefined || e === null) return '未知错误';
+    if (typeof e === 'string') return e;
+    if (e.message) return e.message;
+    if (e.description) return e.description;
+    try { var s = JSON.stringify(e); if (s && s !== '{}') return s; } catch (x) {}
+    return String(e);
+}
+
+// 返回字段补别名：MCP 端读的字段名和这里返回的不一致（静态比对共 38 处），
+// 在出口统一补上 MCP 期望的名字。格式：动作 → [[MCP 读的名, 这里返回的名], ...]
+var FIELD_ALIASES = {
+    getTextBoxes: [['textboxes', 'textBoxes']],
+    getPptTableCell: [['text', 'value']],
+    createSheet: [['name', 'sheetName'], ['index', 'sheetIndex']],
+    copySheet: [['sourceName', 'copiedFrom']],
+    duplicateSlide: [['newSlideIndex', 'newIndex']],
+    openDocument: [['documentName', 'name']],
+    openPresentation: [['filePath', 'path']],
+    saveAs: [['outputPath', 'filePath']],
+    getSelection: [['rowCount', 'rows'], ['columnCount', 'columns']],
+    alignShapes: [['count', 'aligned']],
+    autoLayout: [['adjustedCount', 'count']],
+    beautifyAllSlides: [['slideCount', 'slidesBeautified']],
+    autoBeautifySlide: [['operations', 'beautified']],
+    createKpiCards: [['cardCount', 'count']],
+    createMiniCharts: [['chartCount', 'count']],
+    createOrgChart: [['nodeCount', 'totalNodes'], ['levelCount', 'levels']],
+    createTimeline: [['eventCount', 'events']],
+    createFlowChart: [['nodeCount', 'steps'], ['connectionCount', 'shapes']],
+    applyTransitionToAll: [['slideCount', 'appliedTo']],
+    applyColorScheme: [['appliedSlides', 'shapesProcessed']],
+    addPageIndicator: [['slideCount', 'page']],
+    closePresentation: [['name', 'closed']],
+    insertPptTable: [['tableIndex', 'name']],
+    insertPptChart: [['chartIndex', 'name']],
+    insertPptImage: [['imageIndex', 'name']],
+    groupShapes: [['groupIndex', 'name']],
+    duplicateShape: [['newShapeIndex', 'name']],
+    create3DText: [['shapeId', 'name']],
+    addMasterElement: [['elementId', 'name']],
+    addAnimation: [['animationIndex', 'shapeName']],
+    addEmphasisAnimation: [['animationIndex', 'shape']],
+    addAnimationPreset: [['animationIndex', 'animatedShapes']]
+};
+
+function addFieldAliases(action, data, params) {
+    var list = FIELD_ALIASES[action] || [];
+    for (var i = 0; i < list.length; i++) {
+        var to = list[i][0], from = list[i][1];
+        if (data[to] === undefined && data[from] !== undefined) {
+            var v = data[from];
+            // 计数类字段拿到的是数组时，取个数
+            if (/(Count|count)$/.test(to) && Object.prototype.toString.call(v) === '[object Array]') v = v.length;
+            data[to] = v;
+        }
+    }
+    if (action === 'addSlide' && data.layout === undefined && params.layout) data.layout = params.layout;
+    if ((action === 'setFont' || action === 'setPageSetup') && data.settings === undefined) data.settings = params;
+    if (action === 'applyStyle' && data.affectedText === undefined) data.affectedText = '';
+    if (action === 'copySheet') {
+        if (data.newName === undefined && params.newName) data.newName = params.newName;
+        if (data.index === undefined) { try { data.index = Application.ActiveSheet.Index; } catch (e) {} }
+    }
+    if (action === 'createFlowChart' && data.connectionCount === undefined && typeof data.nodeCount === 'number') {
+        data.connectionCount = Math.max(data.nodeCount - 1, 0);
+    }
+    if (action === 'getSlideMaster' && data.master === undefined) data.master = { shapeCount: data.shapeCount, shapes: data.shapes };
+    if (action === 'getSelection' && data.sheet === undefined) {
+        try { data.sheet = Application.ActiveSheet.Name; } catch (e) {}
+    }
+}
+
+// 当前组件里活动文件的名字，没有打开文件时返回空串
+function activeDocName() {
+    var t = getAppType();
+    try {
+        if (t === 'wps' && Application.ActiveDocument) return Application.ActiveDocument.Name || '';
+        if (t === 'et' && Application.ActiveWorkbook) return Application.ActiveWorkbook.Name || '';
+        if (t === 'wpp' && Application.ActivePresentation) return Application.ActivePresentation.Name || '';
+    } catch (e) {}
+    return '';
+}
+
 var _ribbonUI = null;
 var _pollTimer = null;
 var _isPolling = false;
@@ -57,7 +146,8 @@ function poll() {
 
     try {
         var xhr = new XMLHttpRequest();
-        xhr.open('GET', CONFIG.SERVER_URL + '/poll', true);
+        xhr.open('GET', CONFIG.SERVER_URL + '/poll?app=' + getAppType() +
+            '&doc=' + encodeURIComponent(activeDocName()) + '&inst=' + INSTANCE_ID, true);
         xhr.timeout = 5000;
 
         xhr.onload = function() {
@@ -102,7 +192,9 @@ function sendResult(requestId, result) {
         xhr.setRequestHeader('Content-Type', 'application/json');
         xhr.send(JSON.stringify({
             requestId: requestId,
-            result: result
+            result: result,
+            app: getAppType(),
+            inst: INSTANCE_ID
         }));
     } catch (e) {
         console.error('发送结果失败:', e);
@@ -121,7 +213,8 @@ function getAppType() {
             if (appName.indexOf('表格') !== -1 || appName.indexOf('Excel') !== -1 || appName.indexOf('ET') !== -1 || appName.indexOf('Spreadsheet') !== -1) {
                 return 'et';
             }
-            if (appName.indexOf('演示') !== -1 || appName.indexOf('Presentation') !== -1 || appName.indexOf('WPP') !== -1 || appName.indexOf('Slide') !== -1) {
+            // Mac 版实测：表格报 "Microsoft Excel"，演示报 "Microsoft PowerPoint"
+            if (appName.indexOf('演示') !== -1 || appName.indexOf('PowerPoint') !== -1 || appName.indexOf('Presentation') !== -1 || appName.indexOf('WPP') !== -1 || appName.indexOf('Slide') !== -1) {
                 return 'wpp';
             }
             if (appName.indexOf('文字') !== -1 || appName.indexOf('Writer') !== -1 || appName.indexOf('Word') !== -1 || appName.indexOf('WPS') !== -1) {
@@ -148,6 +241,14 @@ function getAppType() {
 function handleCommand(cmd) {
     console.log('收到命令:', cmd.action);
     var result;
+
+    // 服务端指定了目标组件而不是本组件时，拒绝执行，防止改错文件
+    var myApp = getAppType();
+    if (cmd.app && cmd.app !== 'any' && cmd.app !== myApp) {
+        sendResult(cmd.requestId, { success: false, wrongApp: true,
+            error: '命令应由 ' + cmd.app + ' 执行，本组件是 ' + myApp });
+        return;
+    }
 
     try {
         switch (cmd.action) {
@@ -202,7 +303,7 @@ function handleCommand(cmd) {
                 result = handleOpenDocument(cmd.params);
                 break;
             case 'getDocumentText':
-                result = handleGetDocumentText();
+                result = handleGetDocumentText(cmd.params || {});
                 break;
             case 'insertText':
                 result = handleInsertText(cmd.params);
@@ -922,7 +1023,21 @@ function handleCommand(cmd) {
                 result = { success: false, error: '未知命令: ' + cmd.action };
         }
     } catch (e) {
-        result = { success: false, error: '命令执行异常: ' + (e.message || String(e)) };
+        result = { success: false, error: '命令执行异常: ' + errMsg(e) };
+    }
+
+    // MCP 端多处按“success && data”判断成功，成功却不带 data 会被误报为失败；统一补空 data
+    if (!result || typeof result !== 'object') {
+        result = { success: false, error: '命令没有返回结果: ' + cmd.action };
+    } else if (result.success && (result.data === undefined || result.data === null)) {
+        result.data = {};
+        if (result.message !== undefined) result.data.message = result.message;
+    }
+    if (result.success === false && (result.error === undefined || result.error === null || result.error === '')) {
+        result.error = '执行失败（WPS 没有给出原因）: ' + cmd.action;
+    }
+    if (result.success && result.data && typeof result.data === 'object') {
+        addFieldAliases(cmd.action, result.data, cmd.params || {});
     }
 
     sendResult(cmd.requestId, result);
@@ -933,19 +1048,28 @@ function handleCommand(cmd) {
 function handleGetAppInfo() {
     try {
         var appType = getAppType();
-        var appName = '';
+        var appName = '', version = '', build = '';
         try { appName = Application.Name || ''; } catch (e) {}
+        try { version = String(Application.Version || ''); } catch (e) {}
+        try { build = String(Application.Build || ''); } catch (e) {}
+        var label = { wps: 'WPS 文字', et: 'WPS 表格', wpp: 'WPS 演示' }[appType] || appType;
 
+        // 补上 MCP 端要显示的字段（version/build/platform/activeDocument/message）
         return {
             success: true,
             data: {
                 appType: appType,
                 appName: appName,
+                version: version,
+                build: build,
+                platform: 'macOS',
+                activeDocument: activeDocName(),
+                message: '组件: ' + label,
                 hasSelection: !!(Application && Application.Selection)
             }
         };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -957,7 +1081,7 @@ function handleGetSelectedText() {
         }
         return { success: false, error: 'Application.Selection 不可用' };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -969,7 +1093,7 @@ function handleSetSelectedText(params) {
         }
         return { success: false, error: 'Application.Selection 不可用' };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -995,7 +1119,7 @@ function handleGetActiveWorkbook() {
             }
         };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1010,35 +1134,50 @@ function colToLetter(col) {
     return letter;
 }
 
+// 取工作表：名字 → 按名字；正整数 → 按序号；其余 → 当前工作表
+function getSheet(s) {
+    if (typeof s === 'string' && s) return Application.ActiveWorkbook.Sheets.Item(s);
+    if (typeof s === 'number' && s > 0) return Application.ActiveWorkbook.Sheets.Item(s);
+    return Application.ActiveSheet;
+}
+
+// Mac 版没有 sheet.Cells()，一律用 A1 地址取单元格
+function cellAt(sheet, row, col) {
+    return sheet.Range(colToLetter(col) + row);
+}
+
+// Mac 版读 .Value 得到 undefined，要读 .Value2
+function cellValue(cell) {
+    var v;
+    try { v = cell.Value2; } catch (e) {}
+    if (v === undefined) { try { v = cell.Value; } catch (e) {} }
+    return v === undefined ? null : v;
+}
+
 function handleGetCellValue(params) {
     try {
-        var sheet = params.sheet || Application.ActiveSheet;
-        if (typeof sheet === 'string') {
-            sheet = Application.ActiveWorkbook.Sheets.Item(sheet);
-        }
+        var sheet = getSheet(params.sheet);
         // 支持两种方式：cell地址（如"A1"）或 row/col数字
         var cellAddr;
         if (params.cell) {
             cellAddr = params.cell;
         } else if (params.row && params.col) {
-            // Mac版不支持sheet.Cells()，转成A1格式
             cellAddr = colToLetter(params.col) + params.row;
         } else {
             return { success: false, error: '请指定单元格位置(cell或row/col)' };
         }
         var cell = sheet.Range(cellAddr);
-        return { success: true, data: { value: cell.Value, formula: cell.Formula } };
+        var text = null;
+        try { text = cell.Text; } catch (e) {}
+        return { success: true, data: { cell: cellAddr, value: cellValue(cell), formula: cell.Formula, text: text } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
 function handleSetCellValue(params) {
     try {
-        var sheet = params.sheet || Application.ActiveSheet;
-        if (typeof sheet === 'string') {
-            sheet = Application.ActiveWorkbook.Sheets.Item(sheet);
-        }
+        var sheet = getSheet(params.sheet);
         // 支持两种方式：cell地址（如"A1"）或 row/col数字
         var cellAddr;
         if (params.cell) {
@@ -1053,16 +1192,13 @@ function handleSetCellValue(params) {
         cell.Value2 = params.value;
         return { success: true, data: { cell: cellAddr } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
 function handleGetRangeData(params) {
     try {
-        var sheet = params.sheet || Application.ActiveSheet;
-        if (typeof sheet === 'string') {
-            sheet = Application.ActiveWorkbook.Sheets.Item(sheet);
-        }
+        var sheet = getSheet(params.sheet);
         var range = sheet.Range(params.range);
 
         // Mac版WPS：用Range("A1")格式 + Value2
@@ -1084,64 +1220,67 @@ function handleGetRangeData(params) {
 
         return { success: true, data: { data: data, rows: rowCount, cols: colCount } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
 function handleSetRangeData(params) {
     try {
-        var sheet = params.sheet || Application.ActiveSheet;
-        if (typeof sheet === 'string') {
-            sheet = Application.ActiveWorkbook.Sheets.Item(sheet);
-        }
-        // Mac版WPS不支持批量赋值range.Value = data，需要逐个单元格写入
+        var sheet = getSheet(params.sheet);
         var data = params.data;
         if (!data || !Array.isArray(data)) {
             return { success: false, error: '数据格式错误，需要二维数组' };
         }
 
-        // 解析起始位置
-        var startRange = sheet.Range(params.range);
+        // 解析起始位置（range 可以是 "B2" 或 "B2:D5"，只用左上角）
+        var startRange = sheet.Range(String(params.range).split(':')[0]);
         var startRow = startRange.Row;
         var startCol = startRange.Column;
 
-        // 逐个单元格写入
+        // Mac 版没有 sheet.Cells()，逐格用 A1 地址 + Value2 写入（数字串由 WPS 自动转数值）
+        var count = 0, maxCols = 0;
         for (var r = 0; r < data.length; r++) {
             var rowData = data[r];
-            if (Array.isArray(rowData)) {
-                for (var c = 0; c < rowData.length; c++) {
-                    var cell = sheet.Cells(startRow + r, startCol + c);
-                    cell.Value = rowData[c];
-                }
+            if (!Array.isArray(rowData)) continue;
+            if (rowData.length > maxCols) maxCols = rowData.length;
+            for (var c = 0; c < rowData.length; c++) {
+                var v = rowData[c];
+                if (v === undefined) continue;
+                cellAt(sheet, startRow + r, startCol + c).Value2 = (v === null ? '' : v);
+                count++;
             }
         }
-        return { success: true, data: { rows: data.length, cols: data[0] ? data[0].length : 0 } };
+        var endAddr = colToLetter(startCol + Math.max(maxCols, 1) - 1) + (startRow + Math.max(data.length, 1) - 1);
+        return { success: true, data: { range: colToLetter(startCol) + startRow + ':' + endAddr,
+            rows: data.length, cols: maxCols, cells: count } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
 function handleSetFormula(params) {
     try {
-        var sheet = params.sheet || Application.ActiveSheet;
-        if (typeof sheet === 'string') {
-            sheet = Application.ActiveWorkbook.Sheets.Item(sheet);
-        }
+        var sheet = getSheet(params.sheet);
         // 支持两种方式：cell地址（如"C10"）或 row/col数字
-        var cell;
+        var cell, addr;
         if (params.cell) {
-            cell = sheet.Range(params.cell);
+            addr = params.cell;
         } else if (params.row && params.col) {
-            cell = sheet.Cells(params.row, params.col);
+            addr = colToLetter(params.col) + params.row;
         } else if (params.range) {
-            cell = sheet.Range(params.range);
+            addr = params.range;
         } else {
             return { success: false, error: '请指定单元格位置(cell或row/col)' };
         }
+        cell = sheet.Range(addr);
         cell.Formula = params.formula;
-        return { success: true, data: { cell: cell.Address, calculatedValue: cell.Value } };
+        // 区域公式只取左上角的计算结果
+        var first = sheet.Range(String(addr).split(':')[0]);
+        var text = null;
+        try { text = first.Text; } catch (e) {}
+        return { success: true, data: { cell: addr, calculatedValue: cellValue(first), text: text } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1162,7 +1301,7 @@ function handleGetOpenDocuments(params) {
         }
         return { success: true, data: { documents: documents, count: documents.length } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1173,7 +1312,7 @@ function handleSwitchDocument(params) {
         doc.Activate();
         return { success: true, data: { name: doc.Name, path: doc.FullName } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1187,7 +1326,7 @@ function handleOpenDocument(params) {
         }
         return { success: true, data: { name: doc.Name, path: doc.FullName, paragraphs: doc.Paragraphs.Count } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1206,23 +1345,36 @@ function handleGetActiveDocument() {
             }
         };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
-function handleGetDocumentText() {
+// 取全文：先试 doc.Content.Text，取不到再用 Selection.WholeStory（会移动光标）
+function getWholeText(doc) {
+    var text = '';
+    try { text = doc.Content.Text || ''; } catch (e) {}
+    if (!text) {
+        var sel = Application.Selection;
+        sel.WholeStory();
+        text = sel.Text || '';
+        sel.Collapse(1);
+    }
+    return text;
+}
+
+function handleGetDocumentText(params) {
     try {
         var doc = Application.ActiveDocument;
         if (!doc) return { success: false, error: '没有打开的文档' };
-        // Mac版用Selection.WholeStory选中全文再获取
-        var sel = Application.Selection;
-        sel.WholeStory();
-        var text = sel.Text || '';
-        // 取消选择，恢复光标
-        sel.Collapse(1);
-        return { success: true, data: { text: text } };
+        var full = getWholeText(doc);
+        // 支持 start/end 截取（原来忽略参数总是返回全文）
+        var start = (typeof params.start === 'number' && params.start > 0) ? params.start : 0;
+        var end = (typeof params.end === 'number' && params.end >= start) ? params.end : full.length;
+        var text = full.substring(start, end);
+        return { success: true, data: { text: text, length: text.length, totalLength: full.length,
+            start: start, end: Math.min(end, full.length) } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1243,9 +1395,17 @@ function handleInsertText(params) {
         }
 
         range.InsertAfter(params.text);
-        return { success: true };
+        // 应用样式（原来忽略 style 参数）
+        var styleApplied = null, styleError = null;
+        if (params.style) {
+            try { range.Style = params.style; styleApplied = params.style; }
+            catch (e) { styleError = errMsg(e); }
+        }
+        // 成功时也返回数据（原来不返回，MCP 端会误报失败）
+        return { success: true, data: { position: pos, textLength: String(params.text).length,
+            style: styleApplied, styleError: styleError } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1265,7 +1425,7 @@ function handleGetActivePresentation() {
             }
         };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1320,7 +1480,7 @@ function handleAddSlide(params) {
 
         return { success: true, data: { slideIndex: slide.SlideIndex } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1356,7 +1516,7 @@ function handleUnifyFont(params) {
 
         return { success: true, data: { fontName: fontName, count: count } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1387,7 +1547,7 @@ function handleBeautifySlide(params) {
 
         return { success: true, data: { style: params.style || 'business', count: count } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1399,7 +1559,7 @@ function handleCreatePresentation(params) {
         var ppt = Application.Presentations.Add();
         return { success: true, data: { name: ppt.Name, slideCount: ppt.Slides.Count } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1410,7 +1570,7 @@ function handleOpenPresentation(params) {
         var ppt = Application.Presentations.Open(params.path);
         return { success: true, data: { name: ppt.Name, path: ppt.FullName, slideCount: ppt.Slides.Count } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1423,7 +1583,7 @@ function handleClosePresentation(params) {
         ppt.Close();
         return { success: true, data: { closed: name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1437,7 +1597,7 @@ function handleGetOpenPresentations(params) {
         }
         return { success: true, data: { presentations: presentations, count: presentations.length } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1448,7 +1608,7 @@ function handleSwitchPresentation(params) {
         ppt.Windows.Item(1).Activate();
         return { success: true, data: { name: ppt.Name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1463,7 +1623,7 @@ function handleDeleteSlide(params) {
         ppt.Slides.Item(index).Delete();
         return { success: true, data: { deleted: index } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1477,7 +1637,7 @@ function handleDuplicateSlide(params) {
         var newSlide = slide.Duplicate();
         return { success: true, data: { sourceIndex: index, newIndex: newSlide.Item(1).SlideIndex } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1491,7 +1651,7 @@ function handleMoveSlide(params) {
         ppt.Slides.Item(fromIndex).MoveTo(toIndex);
         return { success: true, data: { from: fromIndex, to: toIndex } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1502,7 +1662,7 @@ function handleGetSlideCount(params) {
         if (!ppt) return { success: false, error: '没有打开的演示文稿' };
         return { success: true, data: { count: ppt.Slides.Count } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1520,7 +1680,7 @@ function handleGetSlideInfo(params) {
         }
         return { success: true, data: { index: index, shapeCount: slide.Shapes.Count, shapes: shapes, layout: slide.Layout } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1533,7 +1693,7 @@ function handleSwitchSlide(params) {
         Application.ActiveWindow.View.GotoSlide(index);
         return { success: true, data: { currentSlide: index } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1548,7 +1708,7 @@ function handleSetSlideLayout(params) {
         ppt.Slides.Item(index).Layout = layout;
         return { success: true, data: { slideIndex: index, layout: layout } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1565,7 +1725,7 @@ function handleGetSlideNotes(params) {
         } catch (e) { notes = ''; }
         return { success: true, data: { slideIndex: index, notes: notes } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1579,7 +1739,7 @@ function handleSetSlideNotes(params) {
         slide.NotesPage.Shapes.Item(2).TextFrame.TextRange.Text = params.notes || '';
         return { success: true, data: { slideIndex: index } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1608,7 +1768,7 @@ function handleAddTextBox(params) {
         }
         return { success: true, data: { name: textBox.Name, slideIndex: index } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1623,7 +1783,7 @@ function handleDeleteTextBox(params) {
         shape.Delete();
         return { success: true, data: { deleted: params.name || params.shapeIndex } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1645,7 +1805,7 @@ function handleGetTextBoxes(params) {
         }
         return { success: true, data: { slideIndex: index, textBoxes: textBoxes, count: textBoxes.length } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1660,7 +1820,7 @@ function handleSetTextBoxText(params) {
         shape.TextFrame.TextRange.Text = params.text || '';
         return { success: true, data: { name: shape.Name, text: params.text } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1687,7 +1847,7 @@ function handleSetTextBoxStyle(params) {
         }
         return { success: true, data: { name: shape.Name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1705,7 +1865,7 @@ function handleSetSlideTitle(params) {
         }
         return { success: true, data: { slideIndex: index, title: params.title } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1722,7 +1882,7 @@ function handleGetSlideTitle(params) {
         }
         return { success: true, data: { slideIndex: index, title: title } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1742,7 +1902,7 @@ function handleSetSlideSubtitle(params) {
         }
         return { success: false, error: '未找到副标题占位符' };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1762,7 +1922,7 @@ function handleSetSlideContent(params) {
         }
         return { success: false, error: '未找到内容占位符' };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1791,7 +1951,7 @@ function handleAddShape(params) {
         }
         return { success: true, data: { name: shape.Name, slideIndex: index } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1806,7 +1966,7 @@ function handleDeleteShape(params) {
         shape.Delete();
         return { success: true, data: { deleted: params.name || params.shapeIndex } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1824,7 +1984,7 @@ function handleGetShapes(params) {
         }
         return { success: true, data: { slideIndex: index, shapes: shapes, count: shapes.length } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1849,7 +2009,7 @@ function handleSetShapeStyle(params) {
         }
         return { success: true, data: { name: shape.Name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1864,7 +2024,7 @@ function handleSetShapeText(params) {
         shape.TextFrame.TextRange.Text = params.text || '';
         return { success: true, data: { name: shape.Name, text: params.text } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1882,7 +2042,7 @@ function handleSetShapePosition(params) {
         if (params.height !== undefined) shape.Height = params.height;
         return { success: true, data: { name: shape.Name, left: shape.Left, top: shape.Top, width: shape.Width, height: shape.Height } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1902,7 +2062,7 @@ function handleInsertPptImage(params) {
         var pic = slide.Shapes.AddPicture(params.path, false, true, left, top, width, height);
         return { success: true, data: { name: pic.Name, path: params.path } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1917,7 +2077,7 @@ function handleDeletePptImage(params) {
         shape.Delete();
         return { success: true, data: { deleted: params.name || params.shapeIndex } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1936,7 +2096,7 @@ function handleSetImageStyle(params) {
         if (params.rotation !== undefined) shape.Rotation = params.rotation;
         return { success: true, data: { name: shape.Name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -1990,7 +2150,7 @@ function handleInsertPptTable(params) {
         var table = slide.Shapes.AddTable(rows, cols, left, top, width, height);
         return { success: true, data: { name: table.Name, rows: rows, cols: cols } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2034,8 +2194,22 @@ function handleSetPptTableCell(params) {
         cell.Shape.TextFrame.TextRange.Text = textValue;
         return { success: true, data: { row: params.row, col: params.col, text: textValue } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
+}
+
+// 按名称或“本页第 N 个表格”找表格（原来把 tableIndex 当作对象序号，取到的是标题框）
+function findPptTable(slide, params) {
+    if (params.tableName) {
+        var byName = slide.Shapes.Item(params.tableName);
+        return (byName && byName.HasTable) ? byName : null;
+    }
+    var target = params.tableIndex || 1, n = 0;
+    for (var i = 1; i <= slide.Shapes.Count; i++) {
+        var s = slide.Shapes.Item(i);
+        if (s.HasTable) { n++; if (n === target) return s; }
+    }
+    return null;
 }
 
 // 获取表格单元格
@@ -2045,12 +2219,13 @@ function handleGetPptTableCell(params) {
         if (!ppt) return { success: false, error: '没有打开的演示文稿' };
         var index = params.slideIndex || 1;
         var slide = ppt.Slides.Item(index);
-        var shape = slide.Shapes.Item(params.tableName || params.tableIndex);
+        var shape = findPptTable(slide, params);
+        if (!shape) return { success: false, error: '第 ' + index + ' 页找不到第 ' + (params.tableIndex || 1) + ' 个表格' };
         var cell = shape.Table.Cell(params.row, params.col);
         var value = cell.Shape.TextFrame.TextRange.Text;
         return { success: true, data: { row: params.row, col: params.col, value: value } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2061,14 +2236,15 @@ function handleSetPptTableStyle(params) {
         if (!ppt) return { success: false, error: '没有打开的演示文稿' };
         var index = params.slideIndex || 1;
         var slide = ppt.Slides.Item(index);
-        var shape = slide.Shapes.Item(params.tableName || params.tableIndex);
+        var shape = findPptTable(slide, params);
+        if (!shape) return { success: false, error: '第 ' + index + ' 页找不到第 ' + (params.tableIndex || 1) + ' 个表格' };
         if (params.left !== undefined) shape.Left = params.left;
         if (params.top !== undefined) shape.Top = params.top;
         if (params.width !== undefined) shape.Width = params.width;
         if (params.height !== undefined) shape.Height = params.height;
         return { success: true, data: { name: shape.Name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2145,7 +2321,7 @@ function handleSetPptTableCellStyle(params) {
 
         return { success: true, data: { row: params.row, col: params.col } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2231,7 +2407,7 @@ function handleSetPptTableRowStyle(params) {
 
         return { success: true, data: { row: row, cols: colCount } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2263,7 +2439,7 @@ function handleSetShapeShadow(params) {
 
         return { success: true, data: { name: shape.Name, shadow: true } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2297,7 +2473,7 @@ function handleSetBackgroundGradient(params) {
 
         return { success: true, data: { slideIndex: params.slideIndex || 1, gradient: true } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2330,7 +2506,7 @@ function handleSetShapeGradient(params) {
 
         return { success: true, data: { name: shape.Name, gradient: true } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2364,7 +2540,7 @@ function handleSetShapeBorder(params) {
 
         return { success: true, data: { name: shape.Name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2380,7 +2556,7 @@ function handleSetShapeTransparency(params) {
 
         return { success: true, data: { name: shape.Name, transparency: params.transparency } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2400,7 +2576,7 @@ function handleSetShapeRoundness(params) {
 
         return { success: true, data: { name: shape.Name, roundness: params.roundness } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2470,7 +2646,7 @@ function handleSetShapeFullStyle(params) {
 
         return { success: true, data: { name: shape.Name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2496,7 +2672,7 @@ function handleAlignShapes(params) {
 
         return { success: true, data: { aligned: shapeIndices.length } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2517,7 +2693,7 @@ function handleDistributeShapes(params) {
 
         return { success: true, data: { distributed: shapeIndices.length } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2537,7 +2713,7 @@ function handleGroupShapes(params) {
 
         return { success: false, error: '至少需要2个形状' };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2555,7 +2731,7 @@ function handleDuplicateShape(params) {
 
         return { success: true, data: { name: duplicate.Name, original: shape.Name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2575,7 +2751,7 @@ function handleSetShapeZOrder(params) {
 
         return { success: true, data: { name: shape.Name, order: params.order } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2602,7 +2778,7 @@ function handleAddConnector(params) {
 
         return { success: true, data: { name: connector.Name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2632,7 +2808,7 @@ function handleAddArrow(params) {
 
         return { success: true, data: { name: line.Name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2654,7 +2830,7 @@ function handleInsertPptChart(params) {
         var chart = slide.Shapes.AddChart(chartType, left, top, width, height);
         return { success: true, data: { name: chart.Name, type: params.type } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2677,7 +2853,7 @@ function handleSetPptChartData(params) {
         }
         return { success: true, data: { chartName: shape.Name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2699,7 +2875,7 @@ function handleSetPptChartStyle(params) {
         }
         return { success: true, data: { chartName: shape.Name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2753,7 +2929,7 @@ function handleApplyColorScheme(params) {
 
         return { success: true, data: { scheme: params.scheme, shapesProcessed: count } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2799,7 +2975,7 @@ function handleAutoBeautifySlide(params) {
 
         return { success: true, data: { style: style, beautified: true } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2859,7 +3035,7 @@ function handleCreateKpiCards(params) {
 
         return { success: true, data: { count: createdCards.length, cards: createdCards } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2932,7 +3108,7 @@ function handleCreateStyledTable(params) {
 
         return { success: true, data: { name: table.Name, rows: rows, cols: cols } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2960,7 +3136,7 @@ function handleAddTitleDecoration(params) {
 
         return { success: true, data: { name: bar.Name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -2985,7 +3161,7 @@ function handleAddPageIndicator(params) {
 
         return { success: true, data: { name: box.Name, page: text } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3024,7 +3200,7 @@ function handleBeautifyAllSlides(params) {
 
         return { success: true, data: { style: style, slidesBeautified: count } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3045,7 +3221,7 @@ function handleAddAnimation(params) {
         if (params.delay) effect.Timing.TriggerDelayTime = params.delay;
         return { success: true, data: { shapeName: shape.Name, effect: params.effect } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3066,7 +3242,7 @@ function handleRemoveAnimation(params) {
         }
         return { success: true, data: { slideIndex: index } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3085,7 +3261,7 @@ function handleGetAnimations(params) {
         }
         return { success: true, data: { slideIndex: index, animations: animations, count: animations.length } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3101,7 +3277,7 @@ function handleSetAnimationOrder(params) {
         effect.MoveTo(params.to);
         return { success: true, data: { from: params.from, to: params.to } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3125,7 +3301,7 @@ function handleSetSlideTransition(params) {
         }
         return { success: true, data: { slideIndex: index, transition: params.transition } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3139,7 +3315,7 @@ function handleRemoveSlideTransition(params) {
         slide.SlideShowTransition.EntryEffect = 0;
         return { success: true, data: { slideIndex: index } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3156,7 +3332,7 @@ function handleApplyTransitionToAll(params) {
         }
         return { success: true, data: { transition: params.transition, appliedTo: ppt.Slides.Count } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3185,7 +3361,7 @@ function handleSetSlideBackground(params) {
         }
         return { success: true, data: { slideIndex: index } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3213,7 +3389,7 @@ function handleSetBackgroundColor(params) {
             return { success: true, data: { slideIndex: index, color: params.color } };
         }
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3228,7 +3404,7 @@ function handleSetBackgroundImage(params) {
         slide.Background.Fill.UserPicture(params.path);
         return { success: true, data: { slideIndex: index, path: params.path } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3247,7 +3423,7 @@ function handleAddPptHyperlink(params) {
         if (params.subAddress) actionSettings.Hyperlink.SubAddress = params.subAddress;
         return { success: true, data: { shapeName: shape.Name, address: params.address } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3262,7 +3438,7 @@ function handleRemovePptHyperlink(params) {
         shape.ActionSettings.Item(1).Hyperlink.Address = '';
         return { success: true, data: { shapeName: shape.Name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3278,7 +3454,7 @@ function handleSetSlideNumber(params) {
         }
         return { success: true, data: { visible: params.visible } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3291,7 +3467,7 @@ function handleSetPptFooter(params) {
         ppt.SlideMaster.HeadersFooters.Footer.Text = params.text || '';
         return { success: true, data: { text: params.text } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3307,7 +3483,7 @@ function handleSetPptDateTime(params) {
         }
         return { success: true, data: { visible: params.visible !== false } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3335,7 +3511,7 @@ function handleFindPptText(params) {
         }
         return { success: true, data: { searchText: params.text, results: results, count: results.length } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3362,7 +3538,7 @@ function handleReplacePptText(params) {
         }
         return { success: true, data: { findText: params.findText, replaceText: params.replaceText, count: count } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3378,7 +3554,7 @@ function handleStartSlideShow(params) {
         ppt.SlideShowSettings.Run();
         return { success: true, data: { startSlide: startSlide } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3390,7 +3566,7 @@ function handleEndSlideShow(params) {
         ppt.SlideShowWindow.View.Exit();
         return { success: true, data: { ended: true } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3401,19 +3577,40 @@ function handleFindReplace(params) {
         var doc = Application.ActiveDocument;
         if (!doc) return { success: false, error: '没有打开的文档' };
 
+        // 先数出现次数，这样能报告替换了几处（Execute 只返回真/假）
+        var matchCase = !!params.matchCase;
+        var whole = getWholeText(doc);
+        var hay = matchCase ? whole : whole.toLowerCase();
+        var needle = matchCase ? String(params.findText) : String(params.findText).toLowerCase();
+        var found = 0;
+        if (needle) {
+            var idx = hay.indexOf(needle);
+            while (idx !== -1) { found++; idx = hay.indexOf(needle, idx + needle.length); }
+        }
+
+        // 只查找模式（MCP 没给替换内容时 replaceMode=false）：只数不改。
+        // 原实现会用空串去替换，等于把找到的文字全部删掉。
+        if (params.replaceMode === false) {
+            return { success: true, data: { count: found, found: found, replaced: 0, findText: params.findText } };
+        }
+
         var find = doc.Content.Find;
         find.ClearFormatting();
         find.Replacement.ClearFormatting();
         find.Text = params.findText;
         find.Replacement.Text = params.replaceText || '';
-        var replaceType = params.replaceAll ? 2 : 1;
+        var replaceAll = params.replaceAll !== false;
+        var replaceType = replaceAll ? 2 : 1;
+        // 区分大小写、全字匹配两个选项原来被忽略
         var result = find.Execute(
-            params.findText, false, false, false, false, false,
+            params.findText, matchCase, !!params.matchWholeWord, false, false, false,
             true, 1, false, params.replaceText || '', replaceType
         );
-        return { success: true, data: { replaced: result } };
+        var count = found === 0 ? 0 : (replaceAll ? found : 1);
+        if (params.matchWholeWord && result === false) count = 0;
+        return { success: true, data: { count: count, found: found, replaced: count, executed: result } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3430,7 +3627,7 @@ function handleSetFont(params) {
 
         return { success: true };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3440,7 +3637,7 @@ function handleApplyStyle(params) {
         range.Style = params.styleName;
         return { success: true };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3469,7 +3666,7 @@ function handleInsertTable(params) {
         table.Borders.Enable = true;
         return { success: true };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3493,7 +3690,7 @@ function handleGenerateTOC(params) {
         doc.TablesOfContents.Add(range, true, 1, levels, false, null, true, true, null, true);
         return { success: true, data: { levels: levels } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3532,7 +3729,7 @@ function handleSetParagraph(params) {
 
         return { success: true };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3552,7 +3749,7 @@ function handleInsertPageBreak(params) {
         Application.Selection.InsertBreak(breakTypeMap[breakType] || 7);
         return { success: true, data: { type: breakType } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3582,7 +3779,7 @@ function handleSetPageSetup(params) {
 
         return { success: true };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3603,7 +3800,7 @@ function handleInsertHeader(params) {
 
         return { success: true };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3631,7 +3828,7 @@ function handleInsertFooter(params) {
 
         return { success: true };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3655,7 +3852,7 @@ function handleInsertHyperlink(params) {
 
         return { success: true, data: { url: url, text: text } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3672,7 +3869,7 @@ function handleInsertBookmark(params) {
 
         return { success: true, data: { name: name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3694,7 +3891,7 @@ function handleGetBookmarks(params) {
 
         return { success: true, data: { bookmarks: bookmarks, count: bookmarks.length } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3711,7 +3908,7 @@ function handleAddComment(params) {
 
         return { success: true };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3733,7 +3930,7 @@ function handleGetComments(params) {
 
         return { success: true, data: { comments: comments, count: comments.length } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3754,7 +3951,7 @@ function handleGetDocumentStats(params) {
 
         return { success: true, data: stats };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3781,7 +3978,7 @@ function handleInsertImage(params) {
 
         return { success: true, data: { width: shape.Width, height: shape.Height } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3796,7 +3993,7 @@ function handleSortRange(params) {
         range.Sort(keyCol, order);
         return { success: true };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3811,7 +4008,7 @@ function handleAutoFilter(params) {
         }
         return { success: true };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3859,7 +4056,7 @@ function handleCreateChart(params) {
             }
         };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3916,7 +4113,7 @@ function handleUpdateChart(params) {
             }
         };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -3979,7 +4176,7 @@ function handleCreatePivotTable(params) {
             }
         };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4028,7 +4225,7 @@ function handleUpdatePivotTable(params) {
             }
         };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4050,7 +4247,7 @@ function handleRemoveDuplicates(params) {
         range.RemoveDuplicates(cols, hasHeader);
         return { success: true, data: { message: '删除重复行成功' } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4092,7 +4289,7 @@ function handleCleanData(params) {
         }
         return { success: true, data: { range: params.range, operations: opResults } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4152,7 +4349,7 @@ function handleGetContext(params) {
             }
         };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4212,7 +4409,7 @@ function handleDiagnoseFormula(params) {
             }
         };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4229,7 +4426,7 @@ function handleCreateSheet(params) {
         }
         return { success: true, data: { sheetName: newSheet.Name, sheetIndex: newSheet.Index } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4245,7 +4442,7 @@ function handleDeleteSheet(params) {
         Application.DisplayAlerts = true;
         return { success: true, data: { deletedSheet: name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4259,7 +4456,7 @@ function handleRenameSheet(params) {
         sheet.Name = params.newName;
         return { success: true, data: { oldName: oldName, newName: params.newName } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4278,7 +4475,7 @@ function handleCopySheet(params) {
         }
         return { success: true, data: { copiedFrom: sheet.Name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4294,7 +4491,7 @@ function handleGetSheetList(params) {
         }
         return { success: true, data: { sheets: sheets, count: sheets.length, activeSheet: Application.ActiveSheet.Name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4307,7 +4504,7 @@ function handleSwitchSheet(params) {
         sheet.Activate();
         return { success: true, data: { activeSheet: sheet.Name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4324,7 +4521,7 @@ function handleMoveSheet(params) {
         }
         return { success: true, data: { movedSheet: sheet.Name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4340,15 +4537,55 @@ function handleSetCellFormat(params) {
         }
         return { success: true, data: { range: params.range, format: params.numberFormat } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
 // 设置单元格样式（背景色、边框、对齐、字体）
+// 内置单元格样式的中英文名对照（Mac 版内部可能用英文名）
+var CELL_STYLE_ALIASES = {
+    '常规': 'Normal', '标题': 'Title', '标题 1': 'Heading 1', '标题 2': 'Heading 2', '标题 3': 'Heading 3',
+    '标题 4': 'Heading 4', '好': 'Good', '差': 'Bad', '适中': 'Neutral', '输入': 'Input', '输出': 'Output',
+    '计算': 'Calculation', '检查单元格': 'Check Cell', '解释性文本': 'Explanatory Text', '注释': 'Note',
+    '警告文本': 'Warning Text', '链接单元格': 'Linked Cell', '汇总': 'Total', '强调': 'Accent1',
+    '强调文字颜色 1': 'Accent1', '强调文字颜色 2': 'Accent2', '强调文字颜色 3': 'Accent3',
+    '强调文字颜色 4': 'Accent4', '强调文字颜色 5': 'Accent5', '强调文字颜色 6': 'Accent6',
+    '千位分隔': 'Comma', '货币': 'Currency', '百分比': 'Percent'
+};
+
+function applyNamedCellStyle(range, name) {
+    var tries = [name];
+    if (CELL_STYLE_ALIASES[name]) tries.push(CELL_STYLE_ALIASES[name]);
+    for (var k in CELL_STYLE_ALIASES) { if (CELL_STYLE_ALIASES[k] === name) tries.push(k); }
+    var lastErr = '';
+    for (var i = 0; i < tries.length; i++) {
+        try {
+            range.Style = tries[i];
+            var got = '';
+            try { got = range.Style.Name; } catch (e) { got = String(range.Style); }
+            if (got === tries[i]) return { ok: true, applied: tries[i] };
+            lastErr = '套用后样式为 ' + got;
+        } catch (e) { lastErr = errMsg(e); }
+    }
+    var names = [];
+    try {
+        var st = Application.ActiveWorkbook.Styles;
+        for (var j = 1; j <= st.Count && names.length < 60; j++) names.push(st.Item(j).Name);
+    } catch (e) {}
+    return { ok: false, error: '样式“' + name + '”没有生效（' + lastErr + '）。可用样式：' + names.join('、') };
+}
+
 function handleSetCellStyle(params) {
     try {
-        var sheet = Application.ActiveSheet;
+        var sheet = getSheet(params.sheet);
         var range = sheet.Range(params.range);
+
+        // 按样式名套用（MCP 的 wps_excel_set_cell_style 只传 style）
+        if (params.style) {
+            var r0 = applyNamedCellStyle(range, params.style);
+            if (!r0.ok) return { success: false, error: r0.error };
+            return { success: true, data: { range: params.range, style: r0.applied } };
+        }
 
         // 字号
         if (params.fontSize) {
@@ -4412,7 +4649,7 @@ function handleSetCellStyle(params) {
 
         return { success: true, data: { range: params.range } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4424,7 +4661,7 @@ function handleMergeCells(params) {
         range.Merge(params.across || false);
         return { success: true, data: { range: params.range } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4436,7 +4673,7 @@ function handleUnmergeCells(params) {
         range.UnMerge();
         return { success: true, data: { range: params.range } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4452,7 +4689,7 @@ function handleSetColumnWidth(params) {
         sheet.Range(col + ':' + col).ColumnWidth = params.width;
         return { success: true, data: { column: col, width: params.width } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4464,7 +4701,7 @@ function handleSetRowHeight(params) {
         sheet.Range(params.row + ':' + params.row).RowHeight = params.height;
         return { success: true, data: { row: params.row, height: params.height } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4483,7 +4720,7 @@ function handleAutoFitColumn(params) {
         }
         return { success: true, data: { message: '列宽已自动调整' } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4500,7 +4737,7 @@ function handleAutoFitRow(params) {
         }
         return { success: true, data: { message: '行高已自动调整' } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4515,7 +4752,7 @@ function handleAutoFitAll(params) {
         range.Rows.AutoFit();
         return { success: true, data: { message: '列宽行高已自动调整' } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4530,7 +4767,7 @@ function handleCopyFormat(params) {
         Application.CutCopyMode = false;
         return { success: true, data: { source: params.source, target: params.target } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4542,7 +4779,7 @@ function handleClearFormats(params) {
         range.ClearFormats();
         return { success: true, data: { range: params.range } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4584,7 +4821,7 @@ function handleSetBorder(params) {
         }
         return { success: true, data: { range: params.range, style: params.style, position: position } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4611,7 +4848,7 @@ function handleSetNumberFormat(params) {
         range.NumberFormat = format;
         return { success: true, data: { range: params.range, format: format } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4628,7 +4865,7 @@ function handleFreezePanes(params) {
         Application.ActiveWindow.FreezePanes = true;
         return { success: true, data: { message: '窗格已冻结' } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4638,7 +4875,7 @@ function handleUnfreezePanes(params) {
         Application.ActiveWindow.FreezePanes = false;
         return { success: true, data: { message: '窗格冻结已取消' } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4656,7 +4893,7 @@ function handleInsertRows(params) {
         }
         return { success: true, data: { insertedAt: startRow, count: count } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4673,7 +4910,7 @@ function handleInsertColumns(params) {
         }
         return { success: true, data: { insertedAt: col, count: count } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4688,7 +4925,7 @@ function handleDeleteRows(params) {
         sheet.Range(startRow + ':' + endRow).Delete();
         return { success: true, data: { deletedFrom: startRow, count: count } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4705,7 +4942,7 @@ function handleDeleteColumns(params) {
         }
         return { success: true, data: { deletedFrom: col, count: count } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4719,7 +4956,7 @@ function handleHideRows(params) {
         }
         return { success: true, data: { hiddenRows: rows } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4735,7 +4972,7 @@ function handleHideColumns(params) {
         }
         return { success: true, data: { hiddenColumns: cols } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4749,7 +4986,7 @@ function handleShowRows(params) {
         }
         return { success: true, data: { shownRows: rows } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4765,7 +5002,7 @@ function handleShowColumns(params) {
         }
         return { success: true, data: { shownColumns: cols } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4811,7 +5048,7 @@ function handleAddConditionalFormat(params) {
 
         return { success: true, data: { range: params.range, type: formatType } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4827,7 +5064,7 @@ function handleRemoveConditionalFormat(params) {
         }
         return { success: true, data: { range: params.range } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4844,7 +5081,7 @@ function handleGetConditionalFormats(params) {
         }
         return { success: true, data: { range: params.range, formats: formats, count: count } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4886,7 +5123,7 @@ function handleAddDataValidation(params) {
 
         return { success: true, data: { range: params.range, type: params.validationType } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4898,7 +5135,7 @@ function handleRemoveDataValidation(params) {
         range.Validation.Delete();
         return { success: true, data: { range: params.range } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4920,7 +5157,7 @@ function handleGetDataValidations(params) {
             }
         };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4946,7 +5183,7 @@ function handleFindInSheet(params) {
 
         return { success: true, data: { searchText: params.searchText, results: results, count: results.length } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4958,7 +5195,7 @@ function handleReplaceInSheet(params) {
         var replaced = searchRange.Replace(params.searchText, params.replaceText, params.matchCase ? 1 : 2);
         return { success: true, data: { searchText: params.searchText, replaceText: params.replaceText, success: replaced } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4972,7 +5209,7 @@ function handleCopyRange(params) {
         range.Copy();
         return { success: true, data: { range: params.range, message: '已复制到剪贴板' } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -4994,7 +5231,7 @@ function handlePasteRange(params) {
 
         return { success: true, data: { destination: params.destination } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5005,7 +5242,7 @@ function handleFillSeries(params) {
         var range = sheet.Range(params.range);
 
         // 设置起始值
-        var startCell = range.Cells.Item(1, 1);
+        var startCell = sheet.Range(String(params.range).split(':')[0]);  // Mac 无 Cells
         startCell.Value2 = params.startValue || 1;
 
         // 填充类型
@@ -5017,7 +5254,7 @@ function handleFillSeries(params) {
 
         return { success: true, data: { range: params.range, type: params.type } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5035,7 +5272,7 @@ function handleTranspose(params) {
 
         return { success: true, data: { source: params.sourceRange, destination: destCell } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5052,7 +5289,7 @@ function handleTextToColumns(params) {
         range.TextToColumns(null, 1, 1, false, true);
         return { success: true, data: { range: params.range, delimiter: delimiter } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5074,7 +5311,7 @@ function handleSubtotal(params) {
         range.Subtotal(params.groupBy, func, totalCol, params.replace !== false, false, true);
         return { success: true, data: { range: params.range } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5091,7 +5328,7 @@ function handleCreateNamedRange(params) {
         wb.Names.Add(params.name, '=' + sheet.Name + '!' + addr);
         return { success: true, data: { name: params.name, range: params.range } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5103,7 +5340,7 @@ function handleDeleteNamedRange(params) {
         wb.Names.Item(params.name).Delete();
         return { success: true, data: { deletedName: params.name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5119,7 +5356,7 @@ function handleGetNamedRanges(params) {
         }
         return { success: true, data: { names: names, count: names.length } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5139,7 +5376,7 @@ function handleAddCellComment(params) {
         }
         return { success: true, data: { cell: params.cell, text: params.text } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5153,7 +5390,7 @@ function handleDeleteCellComment(params) {
         }
         return { success: true, data: { cell: params.cell } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5176,7 +5413,7 @@ function handleGetCellComments(params) {
 
         return { success: true, data: { comments: comments, count: comments.length } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5190,7 +5427,7 @@ function handleProtectSheet(params) {
         sheet.Protect(password, params.drawingObjects, params.contents, params.scenarios);
         return { success: true, data: { sheet: sheet.Name, protected: true } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5202,7 +5439,7 @@ function handleUnprotectSheet(params) {
         sheet.Unprotect(password);
         return { success: true, data: { sheet: sheet.Name, protected: false } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5215,7 +5452,7 @@ function handleProtectWorkbook(params) {
         wb.Protect(password, params.structure !== false, params.windows);
         return { success: true, data: { workbook: wb.Name, protected: true } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5228,7 +5465,7 @@ function handleOpenWorkbook(params) {
         var wb = Application.Workbooks.Open(params.path, params.updateLinks, params.readOnly);
         return { success: true, data: { name: wb.Name, path: wb.FullName, sheets: wb.Sheets.Count } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5242,7 +5479,7 @@ function handleGetOpenWorkbooks(params) {
         }
         return { success: true, data: { workbooks: workbooks, count: workbooks.length } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5253,7 +5490,7 @@ function handleSwitchWorkbook(params) {
         wb.Activate();
         return { success: true, data: { name: wb.Name, path: wb.FullName } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5266,7 +5503,7 @@ function handleCloseWorkbook(params) {
         wb.Close(params.saveChanges !== false);
         return { success: true, data: { closed: name } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5280,7 +5517,7 @@ function handleCreateWorkbook(params) {
         }
         return { success: true, data: { name: wb.Name, path: wb.FullName, sheets: wb.Sheets.Count } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5293,7 +5530,7 @@ function handleGetFormula(params) {
         var formulaLocal = cell.FormulaLocal || '';
         return { success: true, data: { cell: params.cell, formula: formula, formulaLocal: formulaLocal, hasFormula: formula.indexOf('=') === 0 } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5311,7 +5548,7 @@ function handleGetCellInfo(params) {
         var bgColor = cell.Interior.Color || 0;
         return { success: true, data: { cell: params.cell, value: value, formula: formula, numberFormat: numberFormat, font: { name: fontName, size: fontSize, bold: bold }, backgroundColor: bgColor } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5332,7 +5569,7 @@ function handleClearRange(params) {
         }
         return { success: true, data: { range: params.range, clearType: clearType } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5352,7 +5589,7 @@ function handleRefreshLinks(params) {
         }
         return { success: true, data: { refreshed: 0, message: '没有外部链接' } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5366,7 +5603,7 @@ function handleConsolidate(params) {
         destRange.Consolidate(params.sources, func, params.topRow, params.leftColumn, params.createLinks);
         return { success: true, data: { destination: params.destination, sources: params.sources } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5378,7 +5615,7 @@ function handleSetArrayFormula(params) {
         range.FormulaArray = params.formula;
         return { success: true, data: { range: params.range, formula: params.formula } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5394,7 +5631,7 @@ function handleCalculateSheet(params) {
             return { success: true, data: { calculated: sheet.Name } };
         }
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5409,7 +5646,7 @@ function handleInsertExcelImage(params) {
         var pic = sheet.Shapes.AddPicture(params.path, false, true, left, top, width, height);
         return { success: true, data: { name: pic.Name, path: params.path } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5501,7 +5738,7 @@ function handleSetHyperlink(params) {
         sheet.Hyperlinks.Add(range, params.address || '', params.subAddress || '', params.screenTip || '', params.textToDisplay || '');
         return { success: true, data: { cell: params.cell, address: params.address } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5513,7 +5750,7 @@ function handleWrapText(params) {
         range.WrapText = params.wrap !== false;
         return { success: true, data: { range: params.range, wrapText: params.wrap !== false } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5530,7 +5767,7 @@ function handleSetPrintArea(params) {
         }
         return { success: true, data: { printArea: params.range || 'cleared' } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5544,7 +5781,7 @@ function handleGetSelection(params) {
         var colCount = sel.Columns.Count;
         return { success: true, data: { address: addr, rows: rowCount, columns: colCount } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5557,7 +5794,7 @@ function handleGroupRows(params) {
         sheet.Range(startRow + ':' + endRow).Group();
         return { success: true, data: { grouped: startRow + ':' + endRow } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5570,7 +5807,7 @@ function handleGroupColumns(params) {
         sheet.Range(startCol + ':' + endCol).Group();
         return { success: true, data: { grouped: startCol + ':' + endCol } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5582,7 +5819,7 @@ function handleLockCells(params) {
         range.Locked = params.locked !== false;
         return { success: true, data: { range: params.range, locked: params.locked !== false } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5612,9 +5849,15 @@ function handleConvertToPDF(params) {
             return { success: false, error: '无法识别当前应用类型' };
         }
 
-        return { success: true, data: { outputPath: outputPath } };
+        // 补上 MCP 端要显示的源文件和文档类型
+        var src = '';
+        try {
+            src = appType === 'wps' ? doc.FullName : appType === 'et' ? wb.FullName : pres.FullName;
+        } catch (e) {}
+        var label = { wps: 'WPS 文字', et: 'WPS 表格', wpp: 'WPS 演示' }[appType];
+        return { success: true, data: { outputPath: outputPath, sourcePath: src, appType: label } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5644,7 +5887,7 @@ function handleSave(params) {
 
         return { success: true, data: { filePath: filePath } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5672,7 +5915,7 @@ function handleSaveAs(params) {
 
         return { success: true, data: { filePath: outputPath } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5727,7 +5970,7 @@ function handleCreateProgressBar(params) {
 
         return { success: true, data: { bgBar: bgBar.Name, progressBar: progressBar.Name, progress: progress } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5779,7 +6022,7 @@ function handleCreateGauge(params) {
 
         return { success: true, data: { gauge: outerCircle.Name, value: value } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5835,7 +6078,7 @@ function handleCreateMiniCharts(params) {
 
         return { success: true, data: { count: created.length, items: created } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5888,7 +6131,7 @@ function handleCreateDonutChart(params) {
 
         return { success: true, data: { donut: outerCircle.Name, value: value } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -5955,7 +6198,7 @@ function handleAutoLayout(params) {
 
         return { success: true, data: { layout: layout, count: shapes.length } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -6024,7 +6267,7 @@ function handleSmartDistribute(params) {
 
         return { success: true, data: { direction: direction, count: shapes.length } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -6066,7 +6309,7 @@ function handleCreateGrid(params) {
 
         return { success: true, data: { rows: rows, cols: cols, cells: cells } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -6108,7 +6351,7 @@ function handleAddAnimationPreset(params) {
 
         return { success: true, data: { preset: preset, animatedShapes: animatedCount } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -6134,7 +6377,7 @@ function handleAddEmphasisAnimation(params) {
 
         return { success: true, data: { shape: shape.Name, effect: effectType } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -6223,7 +6466,7 @@ function handleCreateFlowChart(params) {
 
         return { success: true, data: { steps: steps.length, shapes: shapes } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -6296,7 +6539,7 @@ function handleCreateOrgChart(params) {
 
         return { success: true, data: { levels: levelKeys.length, totalNodes: nodes.length, shapes: shapes } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -6366,7 +6609,7 @@ function handleCreateTimeline(params) {
 
         return { success: true, data: { events: events.length, shapes: shapes } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -6393,7 +6636,7 @@ function handleGetSlideMaster(params) {
 
         return { success: true, data: { shapeCount: masters.length, shapes: masters } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -6421,7 +6664,7 @@ function handleSetMasterBackground(params) {
 
         return { success: true, data: { message: '母版背景已更新' } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -6458,7 +6701,7 @@ function handleAddMasterElement(params) {
 
         return { success: true, data: { name: shape.Name, type: type } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -6499,7 +6742,7 @@ function handleSet3DRotation(params) {
 
         return { success: true, data: { shape: shape.Name, rotationX: shape.ThreeD.RotationX, rotationY: shape.ThreeD.RotationY } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -6536,7 +6779,7 @@ function handleSet3DDepth(params) {
 
         return { success: true, data: { shape: shape.Name, depth: depth } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -6562,7 +6805,7 @@ function handleSet3DMaterial(params) {
 
         return { success: true, data: { shape: shape.Name, material: material } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }
 
@@ -6606,6 +6849,6 @@ function handleCreate3DText(params) {
 
         return { success: true, data: { name: textBox.Name, text: text } };
     } catch (e) {
-        return { success: false, error: e.message };
+        return { success: false, error: errMsg(e) };
     }
 }

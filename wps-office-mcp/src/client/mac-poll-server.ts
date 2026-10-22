@@ -1,6 +1,6 @@
 /**
  * Input: WPS 指令与HTTP请求
- * Output: 轮询执行结果（含 Issue #17 已连接检测，避免 pkill 杀死已运行 WPS）
+ * Output: 轮询执行结果（按组件分发、取走即出队、不再自动启动/结束 WPS）
  * Pos: macOS/Linux 轮询服务器实现，MCP Server 与 WPS 加载项之间的桥梁
  * 一旦我被修改，请更新我的头部注释，以及所属文件夹的md。
  * Mac轮询服务器 - 老王出品
@@ -13,9 +13,20 @@
  */
 
 import * as http from 'http';
-import { exec } from 'child_process';
-import * as path from 'path';
 import { log } from '../utils/logger';
+
+// 来源校验：浏览器网页的请求都带 http(s) 网址作为 Origin，一律拒绝，
+// 防止网页偷看待执行命令或伪造结果。WPS 加载项、curl 等本机程序的来源放行。
+// 额外放行的来源用环境变量 WPS_MCP_ALLOWED_ORIGINS（逗号分隔）配置。
+const EXTRA_ORIGINS = (process.env.WPS_MCP_ALLOWED_ORIGINS || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+const seenOrigins = new Set<string>();
+
+function isAllowedOrigin(origin: string | undefined): boolean {
+  if (origin === undefined || origin === '') return true;          // 非浏览器客户端
+  if (EXTRA_ORIGINS.includes(origin)) return true;
+  return !/^https?:\/\//i.test(origin);                             // file://、null、WPS 自定义协议等
+}
 
 // 命令→应用类型映射（完整版，覆盖所有 SKILL.md 动作）
 const COMMAND_APP_MAP: Record<string, string> = {
@@ -240,13 +251,66 @@ const COMMAND_APP_MAP: Record<string, string> = {
   switchSlide: 'ppt',
 };
 
+// ==================== 按组件分发 ====================
+// 原实现只有一个待执行命令，哪个组件的加载项先来取就给谁，且发出后不出队，
+// 导致：命令被别的组件抢走报错；同一命令被两个组件各执行一次。
+// 现在：加载项轮询时报上 app/doc/inst，服务端每个组件一个队列，取走即出队。
+
+type AppKey = 'wps' | 'et' | 'wpp';
+type QueueKey = AppKey | 'any';
+
+const APP_LABEL: Record<AppKey, string> = { wps: 'WPS 文字', et: 'WPS 表格', wpp: 'WPS 演示' };
+const APP_FILE_HINT: Record<AppKey, string> = { wps: '.docx', et: '.xlsx', wpp: '.pptx' };
+
+/** 各种写法的组件名统一成 wps/et/wpp，认不出返回空串 */
+export function normalizeApp(x: unknown): AppKey | '' {
+  const s = String(x ?? '').trim().toLowerCase();
+  if (['wps', 'word', 'writer', 'doc', 'docx', '文字'].includes(s)) return 'wps';
+  if (['et', 'excel', 'spreadsheet', 'xls', 'xlsx', '表格'].includes(s)) return 'et';
+  if (['wpp', 'ppt', 'powerpoint', 'presentation', 'pptx', '演示'].includes(s)) return 'wpp';
+  return '';
+}
+
+/** 任何组件都能执行的通用命令：没指定组件时按“开着文件、最近操作”选目标 */
+const COMMON_ACTIONS = new Set([
+  'save', 'saveAs', 'convertToPDF', 'convertFormat', 'getAppInfo',
+  'getSelectedText', 'setSelectedText', 'openFile',
+]);
+/** 只是探测连接，发给任意在线组件 */
+const ANY_ACTIONS = new Set(['ping', 'wireCheck']);
+/** 耗时命令放宽超时（保存 18 MB 的 PPT 实测约 55 秒） */
+const SLOW_ACTIONS = new Set([
+  'save', 'saveAs', 'convertToPDF', 'convertFormat', 'openFile', 'openDocument', 'openWorkbook',
+  'openPresentation', 'exportSlideAsImage', 'exportChartAsImage', 'exportRangeAsImage',
+  'insertSlidesFromFile', 'beautifyAllSlides', 'generateTOC',
+]);
+const DEFAULT_TIMEOUT = 30000;
+const SLOW_TIMEOUT = 180000;
+/** 多久没来取命令就算离线（加载项 500ms 取一次；WPS 忙时会更久） */
+const ONLINE_WINDOW = 4000;
+
 interface PendingCommand {
   action: string;
   params: Record<string, unknown>;
   requestId: string;
+  app: QueueKey;
+  timeoutMs: number;
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
-  timeout: NodeJS.Timeout;
+  timer: NodeJS.Timeout | null;
+  dispatchedTo?: string;
+}
+
+interface AddonInstance {
+  inst: string;
+  app: AppKey | 'unknown';
+  doc: string;
+  lastPoll: number;
+}
+
+export interface ExecuteOptions {
+  appType?: string;
+  timeout?: number;
 }
 
 /**
@@ -255,12 +319,13 @@ interface PendingCommand {
  */
 class MacPollServer {
   private server: http.Server | null = null;
-  private pendingCommand: PendingCommand | null = null;
-  private currentApp: string = '';
+  private queues: Record<QueueKey, PendingCommand[]> = { wps: [], et: [], wpp: [], any: [] };
+  private inFlight = new Map<string, PendingCommand>();
+  private instances = new Map<string, AddonInstance>();
+  private lastUsedApp: AppKey | '' = '';
   private _isRunning: boolean = false;
   private port: number = 58891;
-  /** Issue #17: 记录最近一次 WPS 加载项 poll 请求的时间戳，用于判断加载项是否已连接 */
-  private lastPollTime: number = 0;
+  private startedAt = 0;
 
   get isRunning(): boolean {
     return this._isRunning;
@@ -268,121 +333,140 @@ class MacPollServer {
 
   /**
    * 启动轮询服务器
-   * 丢，这个服务器要处理三种请求：
-   * 1. GET /poll - WPS加载项来轮询获取命令
+   * 1. GET /poll?app=&doc=&inst= - WPS加载项来取命令
    * 2. POST /result - WPS加载项返回执行结果
-   * 3. OPTIONS - 该死的CORS预检请求
+   * 3. GET /status - 查看各组件在线情况
    */
   async start(listenPort: number = 58891): Promise<void> {
-    if (this._isRunning) {
-      log.debug('[Mac] Poll server already running');
-      return;
-    }
-
+    if (this._isRunning) return;
     this.port = listenPort;
 
     return new Promise((resolve, reject) => {
-      this.server = http.createServer((req, res) => {
-        // CORS头 - 必须加，不然WPS加载项的请求会被拦截
-        res.setHeader('Access-Control-Allow-Origin', '*');
+      const server = http.createServer((req, res) => {
+        // 先校验来源，不对浏览器网页开放
+        const origin = req.headers.origin as string | undefined;
+        if (origin !== undefined && !seenOrigins.has(origin)) {
+          seenOrigins.add(origin);
+          log.info('[Mac] Request origin seen', { origin, allowed: isAllowedOrigin(origin) });
+        }
+        if (!isAllowedOrigin(origin)) {
+          log.warn('[Mac] Rejected request from origin', { origin, url: req.url });
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Origin not allowed' }));
+          return;
+        }
+        res.setHeader('Access-Control-Allow-Origin', origin || '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
         res.setHeader('Content-Type', 'application/json');
 
-        // 处理OPTIONS预检请求，这SB浏览器每次POST前都要发一个
         if (req.method === 'OPTIONS') {
           res.writeHead(200);
           res.end();
           return;
         }
 
-        const url = req.url || '';
-
-        if (url === '/poll' && req.method === 'GET') {
-          this.handlePoll(res);
-        } else if (url === '/result' && req.method === 'POST') {
+        const url = new URL(req.url || '/', 'http://127.0.0.1');
+        if (url.pathname === '/poll' && req.method === 'GET') {
+          this.handlePoll(url, res);
+        } else if (url.pathname === '/result' && req.method === 'POST') {
           this.handleResult(req, res);
-        } else if (url === '/status') {
-          // 状态检查接口
-          res.end(JSON.stringify({
-            status: 'running',
-            currentApp: this.currentApp,
-            hasPendingCommand: !!this.pendingCommand
-          }));
+        } else if (url.pathname === '/status') {
+          res.end(JSON.stringify({ status: 'running', online: this.describeOnline(), lastUsedApp: this.lastUsedApp }));
         } else {
           res.writeHead(404);
           res.end(JSON.stringify({ error: 'Not found' }));
         }
       });
 
-      this.server.on('error', (err: NodeJS.ErrnoException) => {
+      server.on('error', (err: NodeJS.ErrnoException) => {
         if (err.code === 'EADDRINUSE') {
-          log.warn(`[Mac] Port ${this.port} already in use, trying to reuse`);
-          // 端口被占用，可能是之前的实例没关干净
-          this._isRunning = true;
-          resolve();
+          // 原来假装启动成功，命令全部空等超时；现在直接说清楚
+          log.warn(`[Mac] Port ${this.port} already in use`);
+          reject(new Error(`端口 ${this.port} 已被占用：多半是另一个 Claude Code 会话正在使用 WPS 工具。` +
+            '同一时间只有一个会话能连 WPS，请关掉其他会话后再试。'));
         } else {
           reject(err);
         }
       });
 
-      this.server.listen(this.port, '127.0.0.1', () => {
+      server.listen(this.port, '127.0.0.1', () => {
+        this.server = server;
         this._isRunning = true;
+        this.startedAt = Date.now();
         log.info(`[Mac] Poll server started on port ${this.port}`);
         resolve();
       });
     });
   }
 
-  /**
-   * 处理轮询请求
-   * WPS加载项每500ms来问一次：有活干不？
-   */
-  private handlePoll(res: http.ServerResponse): void {
-    // Issue #17: 记录 poll 时间，用于判断加载项是否已连接
-    this.lastPollTime = Date.now();
-
-    if (this.pendingCommand) {
-      const cmd = {
-        action: this.pendingCommand.action,
-        params: this.pendingCommand.params,
-        requestId: this.pendingCommand.requestId
-      };
-      log.debug('[Mac] Sending command to addon', { action: cmd.action, requestId: cmd.requestId });
-      res.end(JSON.stringify({ command: cmd }));
-    } else {
-      // 没活，回个空的
-      res.end(JSON.stringify({}));
+  /** 加载项来取命令 */
+  private handlePoll(url: URL, res: http.ServerResponse): void {
+    const app = normalizeApp(url.searchParams.get('app')) || 'unknown';
+    const inst = url.searchParams.get('inst') || `legacy-${app}`;
+    const doc = url.searchParams.get('doc') || '';
+    const now = Date.now();
+    const prev = this.instances.get(inst);
+    if (!prev || prev.doc !== doc || prev.app !== app) {
+      log.info('[Mac] Addon instance', { inst, app, doc });
     }
+    this.instances.set(inst, { inst, app, doc, lastPoll: now });
+
+    const cmd = this.pickCommand(app, inst, doc);
+    if (!cmd) {
+      res.end('{}');
+      return;
+    }
+    // 取走即出队，不会再派给第二个组件
+    cmd.dispatchedTo = `${app}/${inst}`;
+    this.inFlight.set(cmd.requestId, cmd);
+    log.debug('[Mac] Dispatch', { action: cmd.action, requestId: cmd.requestId, to: cmd.dispatchedTo });
+    res.end(JSON.stringify({
+      command: { action: cmd.action, params: cmd.params, requestId: cmd.requestId, app: cmd.app },
+    }));
   }
 
-  /**
-   * 处理结果返回
-   * WPS加载项执行完命令后把结果POST回来
-   */
+  /** 给这个实例挑一条命令（并从队列移除）；没有合适的返回 null */
+  private pickCommand(app: AppKey | 'unknown', inst: string, doc: string): PendingCommand | null {
+    if (app === 'unknown') {
+      // 旧版加载项不报组件：按原来的方式什么都给（兼容）
+      for (const k of ['any', 'wps', 'et', 'wpp'] as QueueKey[]) {
+        if (this.queues[k].length) return this.queues[k].shift()!;
+      }
+      return null;
+    }
+    if (this.queues[app].length) {
+      // 同组件有另一个开着文件的实例在线时，没开文件的实例让给它
+      if (!doc && this.onlineInstances(app).some(i => i.inst !== inst && i.doc)) return null;
+      return this.queues[app].shift()!;
+    }
+    if (this.queues.any.length) return this.queues.any.shift()!;
+    return null;
+  }
+
+  /** 加载项送回结果 */
   private handleResult(req: http.IncomingMessage, res: http.ServerResponse): void {
     let body = '';
-
-    req.on('data', (chunk) => {
-      body += chunk.toString();
-    });
-
+    req.on('data', (chunk) => { body += chunk.toString(); });
     req.on('end', () => {
       try {
         const data = JSON.parse(body);
-        log.debug('[Mac] Received result', { requestId: data.requestId, success: data.result?.success });
-
-        if (this.pendingCommand && data.requestId === this.pendingCommand.requestId) {
-          // 清除超时定时器
-          clearTimeout(this.pendingCommand.timeout);
-
-          // 返回结果
-          this.pendingCommand.resolve(data.result);
-          this.pendingCommand = null;
-        } else {
-          log.warn('[Mac] Received result for unknown request', { requestId: data.requestId });
+        const cmd = this.inFlight.get(data.requestId);
+        if (!cmd) {
+          log.warn('[Mac] Received result for unknown request', { requestId: data.requestId, from: data.app });
+          res.end(JSON.stringify({ ok: true }));
+          return;
         }
-
+        this.inFlight.delete(data.requestId);
+        if (data.result && data.result.wrongApp && cmd.app !== 'any') {
+          // 加载项发现不是自己的命令（不应发生），放回队首重派
+          log.warn('[Mac] Addon refused command for other app, requeue', { action: cmd.action, from: data.app });
+          cmd.dispatchedTo = undefined;
+          this.queues[cmd.app].unshift(cmd);
+        } else {
+          if (cmd.timer) clearTimeout(cmd.timer);
+          cmd.resolve(data.result);
+        }
         res.end(JSON.stringify({ ok: true }));
       } catch (e) {
         log.error('[Mac] Failed to parse result', { error: e, body });
@@ -392,102 +476,137 @@ class MacPollServer {
     });
   }
 
-  /**
-   * 执行WPS命令
-   * 这是对外的主要接口，调用后会：
-   * 1. 检查是否需要切换应用
-   * 2. 把命令放到队列里等WPS加载项来取
-   * 3. 等待结果返回
-   */
-  async executeCommand(action: string, params: Record<string, unknown> = {}, timeout: number = 30000): Promise<unknown> {
-    // 确定需要的应用类型
-    const requiredApp = this.getRequiredApp(action);
+  private onlineInstances(app?: AppKey): AddonInstance[] {
+    const now = Date.now();
+    return [...this.instances.values()].filter(i =>
+      now - i.lastPoll < ONLINE_WINDOW && (app === undefined || i.app === app));
+  }
 
-    // 如果需要切换应用
-    if (requiredApp && requiredApp !== this.currentApp) {
-      // Issue #17: 如果 WPS 加载项已通过轮询连接（最近 5 秒内有 poll 请求），
-      // 直接更新 currentApp 状态，不触发 switchApp（避免 pkill 杀死已运行的 WPS）
-      const pollAge = Date.now() - this.lastPollTime;
-      if (this.lastPollTime > 0 && pollAge < 5000) {
-        log.info(`[Mac] WPS addon already connected (last poll ${pollAge}ms ago), updating currentApp to ${requiredApp}`);
-        this.currentApp = requiredApp;
-      } else {
-        log.info(`[Mac] Switching app from ${this.currentApp || 'none'} to ${requiredApp}`);
-        await this.switchApp(requiredApp);
+  private onlineApps(withDocOnly: boolean): AppKey[] {
+    const apps = new Set<AppKey>();
+    for (const i of this.onlineInstances()) {
+      if (i.app !== 'unknown' && (!withDocOnly || i.doc)) apps.add(i.app);
+    }
+    return [...apps];
+  }
+
+  /** 各组件在线情况，给 ping / 状态查询用 */
+  describeOnline(): Array<{ app: string; label: string; doc: string }> {
+    return this.onlineInstances().map(i => ({
+      app: i.app,
+      label: i.app === 'unknown' ? '旧版加载项' : APP_LABEL[i.app],
+      doc: i.doc,
+    }));
+  }
+
+  /** 刚启动时加载项还没来得及取命令，最多等 waitMs */
+  private async waitForAddons(pred: () => boolean, waitMs: number): Promise<boolean> {
+    const t0 = Date.now();
+    while (!pred()) {
+      if (Date.now() - t0 >= waitMs) return false;
+      await new Promise(r => setTimeout(r, 200));
+    }
+    return true;
+  }
+
+  /** 通用命令没指定组件时，选目标组件 */
+  private pickCommonTarget(): AppKey | '' {
+    const pick = (cands: AppKey[]): AppKey | '' => {
+      if (cands.length === 0) return '';
+      if (this.lastUsedApp && cands.includes(this.lastUsedApp)) return this.lastUsedApp;
+      return cands[0];
+    };
+    return pick(this.onlineApps(true)) || pick(this.onlineApps(false));
+  }
+
+  private notConnectedError(app: AppKey): Error {
+    const others = this.onlineInstances().filter(i => i.app !== app && i.app !== 'unknown')
+      .map(i => APP_LABEL[i.app as AppKey] + (i.doc ? `（${i.doc}）` : ''));
+    return new Error(`${APP_LABEL[app]}没有连接：请在 WPS 里打开一个 ${APP_FILE_HINT[app]} 文件后再试` +
+      '（刚打开的话等几秒；如果 WPS 弹出“加载项已修改，是否继续加载”，点 OK）。' +
+      (others.length ? `当前在线：${[...new Set(others)].join('、')}。` : ''));
+  }
+
+  /**
+   * 执行WPS命令：确定目标组件 → 入该组件的队列 → 等结果
+   */
+  async executeCommand(action: string, params: Record<string, unknown> = {}, opts: ExecuteOptions = {}): Promise<unknown> {
+    const sendParams: Record<string, unknown> = { ...params };
+    const explicit = normalizeApp(sendParams.targetApp);
+    delete sendParams.targetApp;
+
+    let target: QueueKey | '' = explicit || normalizeApp(opts.appType) || normalizeApp(COMMAND_APP_MAP[action]);
+    const justStarted = Date.now() - this.startedAt < 3000;
+
+    if (!target && ANY_ACTIONS.has(action)) {
+      target = 'any';
+      if (!(await this.waitForAddons(() => this.onlineInstances().length > 0, justStarted ? 3000 : 0))) {
+        throw new Error('WPS 没有连接：请先打开 WPS 并打开一个文件（刚打开的话等几秒再试；' +
+          '如果 WPS 弹出“加载项已修改，是否继续加载”，点 OK）。');
       }
+    } else if (!target) {
+      // 通用命令（保存、导出 PDF 等）或未登记的命令
+      await this.waitForAddons(() => this.pickCommonTarget() !== '', justStarted ? 3000 : 0);
+      target = this.pickCommonTarget();
+      if (!target) {
+        throw new Error('WPS 没有连接：请先打开 WPS 并打开一个文件。');
+      }
+      if (!COMMON_ACTIONS.has(action)) {
+        log.warn('[Mac] Action not in COMMAND_APP_MAP, routed by recent use', { action, target });
+      }
+    } else {
+      const app = target as AppKey;
+      const ok = await this.waitForAddons(() => this.onlineInstances(app).length > 0, justStarted ? 3000 : 1500);
+      if (!ok) throw this.notConnectedError(app);
     }
 
-    // 发送命令并等待结果
-    return new Promise((resolve, reject) => {
-      const requestId = `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    if (target !== 'any') this.lastUsedApp = target;
+    const timeoutMs = opts.timeout || (SLOW_ACTIONS.has(action) ? SLOW_TIMEOUT : DEFAULT_TIMEOUT);
 
-      // 超时处理
-      const timeoutHandle = setTimeout(() => {
-        if (this.pendingCommand?.requestId === requestId) {
-          this.pendingCommand = null;
-          reject(new Error(`Command timeout after ${timeout}ms: ${action}`));
-        }
-      }, timeout);
-
-      this.pendingCommand = {
-        action,
-        params,
-        requestId,
-        resolve,
-        reject,
-        timeout: timeoutHandle
+    const result = await new Promise<unknown>((resolve, reject) => {
+      const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+      const cmd: PendingCommand = {
+        action, params: sendParams, requestId, app: target as QueueKey, timeoutMs, resolve, reject, timer: null,
       };
-
-      log.debug('[Mac] Command queued', { action, requestId });
+      cmd.timer = setTimeout(() => {
+        const q = this.queues[cmd.app];
+        const idx = q.indexOf(cmd);
+        if (idx >= 0) q.splice(idx, 1);
+        const wasDispatched = this.inFlight.delete(requestId) || !!cmd.dispatchedTo;
+        const label = cmd.app === 'any' ? 'WPS' : APP_LABEL[cmd.app];
+        reject(new Error(wasDispatched
+          ? `${label}在 ${Math.round(timeoutMs / 1000)} 秒内没有返回结果（${action}）。` +
+            'WPS 可能仍在处理，保存、导出这类操作可能已经完成，请先核对文件再决定是否重做。'
+          : `${label}在 ${Math.round(timeoutMs / 1000)} 秒内没有来取命令（${action}），命令未执行。` +
+            'WPS 可能卡住或弹出了对话框，请看一下 WPS 窗口。'));
+      }, timeoutMs);
+      this.queues[cmd.app].push(cmd);
+      log.debug('[Mac] Command queued', { action, requestId, app: cmd.app });
     });
-  }
 
-  /**
-   * 根据命令获取需要的应用类型
-   */
-  private getRequiredApp(action: string): string {
-    return COMMAND_APP_MAP[action] || '';
-  }
-
-  /**
-   * 切换WPS应用
-   * 调用wps-auto.sh脚本自动关闭当前应用并启动目标应用
-   */
-  private async switchApp(app: string): Promise<void> {
-    // wps-auto.sh脚本路径 - 在wps-claude-assistant目录下
-    const scriptPath = path.join(__dirname, '../../../wps-claude-assistant/wps-auto.sh');
-
-    return new Promise((resolve, _reject) => {
-      log.info(`[Mac] Executing switch script: ${scriptPath} switch ${app}`);
-
-      exec(`"${scriptPath}" switch ${app}`, { timeout: 60000 }, (error, stdout, stderr) => {
-        if (error) {
-          log.error('[Mac] Switch app failed', { error, stderr });
-          // 切换失败不要reject，让命令继续尝试
-          // 可能用户已经手动打开了正确的应用
-          log.warn('[Mac] Continuing despite switch failure');
-        } else {
-          log.info(`[Mac] Switched to ${app}`, { stdout: stdout.trim() });
-        }
-
-        this.currentApp = app;
-
-        // 等待一下让WPS加载项有时间连接
-        setTimeout(() => resolve(), 2000);
-      });
-    });
+    // ping 时顺便报告各组件在线情况
+    if (ANY_ACTIONS.has(action) && result && typeof result === 'object') {
+      (result as Record<string, unknown>).online = this.describeOnline();
+    }
+    return result;
   }
 
   /**
    * 停止服务器
    */
   stop(): void {
-    if (this.pendingCommand) {
-      clearTimeout(this.pendingCommand.timeout);
-      this.pendingCommand.reject(new Error('Server stopped'));
-      this.pendingCommand = null;
+    for (const k of Object.keys(this.queues) as QueueKey[]) {
+      for (const c of this.queues[k]) {
+        if (c.timer) clearTimeout(c.timer);
+        c.reject(new Error('Server stopped'));
+      }
+      this.queues[k] = [];
     }
-
+    for (const c of this.inFlight.values()) {
+      if (c.timer) clearTimeout(c.timer);
+      c.reject(new Error('Server stopped'));
+    }
+    this.inFlight.clear();
     if (this.server) {
       this.server.close();
       this.server = null;
@@ -496,18 +615,13 @@ class MacPollServer {
     }
   }
 
-  /**
-   * 获取当前连接的应用类型
-   */
+  /** 最近一次操作的组件（兼容旧接口） */
   getCurrentApp(): string {
-    return this.currentApp;
+    return this.lastUsedApp;
   }
 
-  /**
-   * 设置当前应用（用于外部更新状态）
-   */
   setCurrentApp(app: string): void {
-    this.currentApp = app;
+    this.lastUsedApp = normalizeApp(app);
   }
 }
 
